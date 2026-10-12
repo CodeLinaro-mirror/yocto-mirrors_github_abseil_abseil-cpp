@@ -800,9 +800,8 @@ ABSL_ATTRIBUTE_ALWAYS_INLINE inline void InitializeThreeElementsControlBytes(
   // new_ctrl after 2nd store  =      EHNSEHNEEEE
 }
 
-// ClearBackingArrayNoReuse clears the backing array and sets the common
-// fields to the default values for empty non-allocated tables.
-// REQUIRES: c.capacity > policy.soo_capacity.
+// Clears the backing array and sets the common fields to the default values for
+// empty non-allocated tables. REQUIRES: c.capacity > policy.soo_capacity.
 void ClearBackingArrayNoReuse(CommonFields& c,
                               const PolicyFunctions& __restrict policy,
                               void* alloc) {
@@ -957,12 +956,7 @@ void Clear(CommonFields& c, const PolicyFunctions& __restrict policy,
     }
     // Iterating over this container is O(bucket_count()). When bucket_count()
     // is much greater than size(), iteration becomes prohibitively expensive.
-    // For clear() it is more important to reuse the allocated array when the
-    // container is small because allocation takes comparatively long time
-    // compared to destruction of the elements of the container. So we pick the
-    // largest bucket_count() threshold for which iteration is still fast and
-    // past that we simply deallocate the array.
-    ClearBackingArray(c, policy, alloc, /*reuse=*/cap < 128);
+    ClearBackingArrayNoReuse(c, policy, alloc);
   }
   c.set_reserved_growth(0);
   c.set_reservation_size(0);
