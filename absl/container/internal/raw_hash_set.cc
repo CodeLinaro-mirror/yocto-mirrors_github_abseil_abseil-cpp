@@ -506,7 +506,7 @@ inline void SetCtrlNoSanitizeImpl(const CommonFields& c, size_t i, ctrl_t h) {
   ctrl_t* ctrl = c.control();
   const size_t cap = c.capacity();
   ctrl[i] = h;
-  ctrl[((i - NumClonedBytes()) & cap) + (NumClonedBytes() & cap)] = h;
+  ctrl[i < NumClonedBytes() ? i + cap + 1 : i] = h;
 }
 
 inline void SetCtrl(const CommonFields& c, size_t i, ctrl_t h,
@@ -551,11 +551,12 @@ inline void SetCtrlInSingleGroupTable(const CommonFields& c, size_t i, h2_t h,
 // we can save some operations when setting the cloned control byte.
 inline void SetCtrlInLargeTable(const CommonFields& c, size_t i, ctrl_t h,
                                 size_t slot_size) {
-  ABSL_SWISSTABLE_ASSERT(c.capacity() >= Group::kWidth - 1);
+  const size_t cap = c.capacity();
+  ABSL_SWISSTABLE_ASSERT(cap >= Group::kWidth - 1);
   DoSanitizeOnSetCtrl(c, i, h, slot_size);
   ctrl_t* ctrl = c.control();
   ctrl[i] = h;
-  ctrl[((i - NumClonedBytes()) & c.capacity()) + NumClonedBytes()] = h;
+  ctrl[i < NumClonedBytes() ? i + cap + 1 : i] = h;
 }
 // Overload for setting to an occupied `h2_t` rather than a special `ctrl_t`.
 inline void SetCtrlInLargeTable(const CommonFields& c, size_t i, h2_t h,
