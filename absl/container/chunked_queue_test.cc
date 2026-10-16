@@ -399,6 +399,84 @@ TEST(ChunkedQueue, PushFrontAndPushBack) {
   EXPECT_THAT(q, ElementsAre(9, 10, 11));
 }
 
+TEST(ChunkedQueue, PushBackAndPopBack) {
+  absl::chunked_queue<int64_t> q;
+  EXPECT_TRUE(q.empty());
+  EXPECT_EQ(0, q.size());
+  constexpr int kNumElements = 500;
+  for (int i = 0; i < kNumElements; i++) {
+    q.push_back(i);
+    EXPECT_EQ(q.front(), 0) << ": iteration " << i;
+    EXPECT_EQ(q.back(), i) << ": iteration " << i;
+    EXPECT_FALSE(q.empty());
+    EXPECT_EQ(i + 1, q.size());
+  }
+  for (int i = 0; i < kNumElements; i++) {
+    EXPECT_FALSE(q.empty());
+    EXPECT_EQ(kNumElements - i, q.size());
+    EXPECT_EQ(q.front(), 0);
+    EXPECT_EQ(q.back(), kNumElements - 1 - i);
+    q.pop_back();
+  }
+  EXPECT_TRUE(q.empty());
+  EXPECT_EQ(0, q.size());
+}
+
+TEST(ChunkedQueue, PushFrontAndPopBack) {
+  absl::chunked_queue<int64_t> q;
+  EXPECT_TRUE(q.empty());
+  EXPECT_EQ(0, q.size());
+  constexpr int kNumElements = 500;
+  for (int i = 0; i < kNumElements; i++) {
+    q.push_front(i);
+    EXPECT_EQ(q.front(), i) << ": iteration " << i;
+    EXPECT_EQ(q.back(), 0) << ": iteration " << i;
+    EXPECT_FALSE(q.empty());
+    EXPECT_EQ(i + 1, q.size());
+  }
+  for (int i = 0; i < kNumElements; i++) {
+    EXPECT_FALSE(q.empty());
+    EXPECT_EQ(kNumElements - i, q.size());
+    EXPECT_EQ(q.front(), kNumElements - 1);
+    EXPECT_EQ(q.back(), i);
+    q.pop_back();
+  }
+  EXPECT_TRUE(q.empty());
+  EXPECT_EQ(0, q.size());
+}
+
+TEST(ChunkedQueue, MixedPushAndPopBothEnds) {
+  absl::chunked_queue<int64_t, 3> q;
+  q.push_front(2);
+  q.push_back(3);
+  q.push_front(1);
+  q.push_back(4);
+  q.push_front(0);
+  q.push_back(5);
+  EXPECT_THAT(q, ElementsAre(0, 1, 2, 3, 4, 5));
+
+  q.pop_back();
+  EXPECT_THAT(q, ElementsAre(0, 1, 2, 3, 4));
+  q.pop_front();
+  EXPECT_THAT(q, ElementsAre(1, 2, 3, 4));
+
+  // Alternate push_back and pop_back across block boundary.
+  q.push_back(40);
+  q.push_back(50);
+  EXPECT_THAT(q, ElementsAre(1, 2, 3, 4, 40, 50));
+  q.pop_back();
+  EXPECT_THAT(q, ElementsAre(1, 2, 3, 4, 40));
+  q.pop_back();
+  EXPECT_THAT(q, ElementsAre(1, 2, 3, 4));
+  q.push_back(400);
+  EXPECT_THAT(q, ElementsAre(1, 2, 3, 4, 400));
+
+  while (!q.empty()) {
+    q.pop_back();
+  }
+  EXPECT_TRUE(q.empty());
+}
+
 TEST(ChunkedQueue, Swap) {
   absl::chunked_queue<int64_t> q1;
   absl::chunked_queue<int64_t> q2;
@@ -614,20 +692,63 @@ TEST(ChunkedQueue, Iterator) {
   ASSERT_TRUE(copy_iter == q.end());
 }
 
+TEST(ChunkedQueue, ReverseIterator) {
+  absl::chunked_queue<int64_t> q;
+  EXPECT_TRUE(q.rbegin() == q.rend());
+
+  q.push_back(1);
+  absl::chunked_queue<int64_t>::const_reverse_iterator iter = q.rbegin();
+  ASSERT_FALSE(iter == q.rend());
+  ASSERT_EQ(*iter, 1);
+  ++iter;
+  ASSERT_TRUE(iter == q.rend());
+
+  q.push_back(2);
+  iter = q.rbegin();
+  ASSERT_EQ(*iter, 2);
+  ++iter;
+  absl::chunked_queue<int64_t>::const_reverse_iterator copy_iter = iter;
+  ASSERT_FALSE(copy_iter == q.rend());
+  ASSERT_EQ(*copy_iter, 1);
+  ++copy_iter;
+  ASSERT_TRUE(copy_iter == q.rend());
+
+  copy_iter = iter;
+  ASSERT_FALSE(iter == q.rend());
+  ASSERT_EQ(*iter, 1);
+  ++iter;
+  ASSERT_TRUE(iter == q.rend());
+
+  ASSERT_FALSE(copy_iter == q.rend());
+  ASSERT_EQ(*copy_iter, 1);
+  ++copy_iter;
+  ASSERT_TRUE(copy_iter == q.rend());
+}
+
 TEST(ChunkedQueue, IteratorDefaultConstructor) {
   using ConstIter = absl::chunked_queue<int64_t>::const_iterator;
   using Iter = absl::chunked_queue<int64_t>::iterator;
+  using ConstRevIter = absl::chunked_queue<int64_t>::const_reverse_iterator;
+  using RevIter = absl::chunked_queue<int64_t>::reverse_iterator;
   ConstIter const_iter;
   EXPECT_TRUE(const_iter == ConstIter());
   Iter iter;
   EXPECT_TRUE(iter == Iter());
+  ConstRevIter const_rev_iter;
+  EXPECT_TRUE(const_rev_iter == ConstRevIter());
+  RevIter rev_iter;
+  EXPECT_TRUE(rev_iter == RevIter());
 }
 
 TEST(ChunkedQueue, IteratorConversion) {
   using ConstIter = absl::chunked_queue<int64_t>::const_iterator;
   using Iter = absl::chunked_queue<int64_t>::iterator;
+  using ConstRevIter = absl::chunked_queue<int64_t>::const_reverse_iterator;
+  using RevIter = absl::chunked_queue<int64_t>::reverse_iterator;
   EXPECT_FALSE((std::is_convertible_v<ConstIter, Iter>));
   EXPECT_TRUE((std::is_convertible_v<Iter, ConstIter>));
+  EXPECT_FALSE((std::is_convertible_v<ConstRevIter, RevIter>));
+  EXPECT_TRUE((std::is_convertible_v<RevIter, ConstRevIter>));
   absl::chunked_queue<int64_t> q;
   ConstIter it1 = q.begin();
   ConstIter it2 = q.cbegin();
@@ -636,6 +757,14 @@ TEST(ChunkedQueue, IteratorConversion) {
   it2 = q.cend();
   it3 = q.end();
   EXPECT_FALSE((std::is_assignable_v<Iter, ConstIter>));
+
+  ConstRevIter rit1 = q.rbegin();
+  ConstRevIter rit2 = q.crbegin();
+  RevIter rit3 = q.rbegin();
+  rit1 = q.rend();
+  rit2 = q.crend();
+  rit3 = q.rend();
+  EXPECT_FALSE((std::is_assignable_v<RevIter, ConstRevIter>));
 }
 
 struct TestEntry {
@@ -662,6 +791,26 @@ TEST(ChunkedQueue, Iterator2) {
   EXPECT_TRUE(iter == q.end());
 }
 
+TEST(ChunkedQueue, ReverseIterator2) {
+  absl::chunked_queue<TestEntry> q;
+  TestEntry e;
+  e.x = 1;
+  e.y = 2;
+  q.push_back(e);
+  e.x = 3;
+  e.y = 4;
+  q.push_back(e);
+
+  absl::chunked_queue<TestEntry>::const_reverse_iterator iter = q.rbegin();
+  EXPECT_EQ(iter->x, 3);
+  EXPECT_EQ(iter->y, 4);
+  ++iter;
+  EXPECT_EQ(iter->x, 1);
+  EXPECT_EQ(iter->y, 2);
+  ++iter;
+  EXPECT_TRUE(iter == q.rend());
+}
+
 TEST(ChunkedQueue, Iterator_MultipleBlocks) {
   absl::chunked_queue<int64_t> q;
   for (int i = 0; i < 130; ++i) {
@@ -686,6 +835,33 @@ TEST(ChunkedQueue, Iterator_MultipleBlocks) {
   }
   EXPECT_TRUE(q.empty());
   EXPECT_TRUE(q.begin() == q.end());
+}
+
+TEST(ChunkedQueue, ReverseIterator_MultipleBlocks) {
+  absl::chunked_queue<int64_t> q;
+  for (int i = 0; i < 130; ++i) {
+    absl::chunked_queue<int64_t>::const_reverse_iterator iter = q.rbegin();
+    for (int j = i - 1; j >= 0; --j) {
+      ASSERT_FALSE(iter == q.rend());
+      EXPECT_EQ(*iter, j);
+      ++iter;
+    }
+    ASSERT_TRUE(iter == q.rend());
+    q.push_back(i);
+  }
+
+  for (int i = 129; i >= 0; --i) {
+    absl::chunked_queue<int64_t>::const_reverse_iterator iter = q.rbegin();
+    for (int j = i; j >= 0; --j) {
+      ASSERT_FALSE(iter == q.rend());
+      EXPECT_EQ(*iter, j);
+      ++iter;
+    }
+    ASSERT_TRUE(iter == q.rend());
+    q.pop_back();
+  }
+  EXPECT_TRUE(q.empty());
+  EXPECT_TRUE(q.rbegin() == q.rend());
 }
 
 TEST(ChunkedQueue, Iterator_PopFrontInvalidate) {
@@ -737,6 +913,66 @@ TEST(ChunkedQueue, Iterator_PushFrontInvalidate) {
   EXPECT_TRUE(++j == q.end());
 }
 
+TEST(ChunkedQueue, Iterator_PopBackInvalidate) {
+  absl::chunked_queue<int64_t> q;
+  for (int i = 0; i < 130; ++i) {
+    q.push_back(i);
+  }
+
+  auto iter = --q.end();
+  for (int i = 129; i >= 0; --i) {
+    if (i > 0) {
+      auto curr = iter--;
+      ASSERT_FALSE(curr == q.end());
+      EXPECT_EQ(*curr, i);
+    } else {
+      ASSERT_TRUE(iter == q.begin());
+      EXPECT_EQ(*iter, 0);
+    }
+    q.pop_back();
+  }
+  ASSERT_TRUE(q.empty());
+}
+
+TEST(ChunkedQueue, BidirectionalAndReverseIterator) {
+  absl::chunked_queue<int64_t, 3> q;
+  EXPECT_TRUE(q.rbegin() == q.rend());
+  EXPECT_TRUE(q.crbegin() == q.crend());
+
+  // Populate from both front and back across multiple blocks.
+  for (int i = 4; i >= 0; --i) {
+    q.push_front(i);
+  }
+  for (int i = 5; i < 10; ++i) {
+    q.push_back(i);
+  }
+
+  // Test decrementing from `end()` to `begin()` via `--it` and `it--`.
+  auto it = q.end();
+  for (int expected = 9; expected >= 0; --expected) {
+    ASSERT_FALSE(it == q.begin());
+    if (expected % 2 == 0) {
+      --it;
+      EXPECT_EQ(*it, expected);
+    } else {
+      auto prev_it = it--;
+      if (expected < 9) {
+        EXPECT_EQ(*prev_it, expected + 1);
+      }
+      EXPECT_EQ(*it, expected);
+    }
+  }
+  EXPECT_TRUE(it == q.begin());
+
+  // Test `rbegin()` / `rend()` and `crbegin()` / `crend()`.
+  std::vector<int64_t> rev(q.rbegin(), q.rend());
+  EXPECT_THAT(rev, ElementsAre(9, 8, 7, 6, 5, 4, 3, 2, 1, 0));
+
+  const auto& cq = q;
+  std::vector<int64_t> crev(cq.crbegin(), cq.crend());
+  EXPECT_THAT(crev, ElementsAre(9, 8, 7, 6, 5, 4, 3, 2, 1, 0));
+}
+
 struct MyType {
   static int constructor_calls;
   static int destructor_calls;
@@ -766,10 +1002,15 @@ TEST(ChunkedQueue, ConstructorDestructorCalls) {
       }
       if (i % 10 == 0) {
         q.clear();
-      } else {
+      } else if (i % 2 == 0) {
         for (int j = 0; j < i; j++) {
           EXPECT_EQ(q.front().val, j);
           q.pop_front();
+        }
+      } else {
+        for (int j = i - 1; j >= 0; j--) {
+          EXPECT_EQ(q.back().val, j);
+          q.pop_back();
         }
       }
     }
@@ -790,6 +1031,17 @@ TEST(ChunkedQueue, MoveObjects) {
   q.pop_front();
   EXPECT_EQ(11, *q.front());
   q.pop_front();
+
+  q.push_back(std::make_unique<int>(10));
+  q.push_back(std::make_unique<int>(11));
+  q.push_front(std::make_unique<int>(9));
+
+  EXPECT_EQ(11, *q.back());
+  q.pop_back();
+  EXPECT_EQ(10, *q.back());
+  q.pop_back();
+  EXPECT_EQ(9, *q.back());
+  q.pop_back();
 }
 
 // Verifies that `emplace_front` constructs elements in-place at the front of
@@ -881,6 +1133,7 @@ TEST(ChunkedQueue, StatelessAllocatorDoesntAffectObjectSizes) {
   };
   struct MockBlock {
     void* next;
+    void* prev;
     void* limit;
   };
   using TestQueueType = absl::chunked_queue<int64_t, 1, 16>;
@@ -924,6 +1177,7 @@ TEST(ChunkedQueue, Hardening) {
   EXPECT_DEATH_IF_SUPPORTED(q.front(), "");
   EXPECT_DEATH_IF_SUPPORTED(q.back(), "");
   EXPECT_DEATH_IF_SUPPORTED(q.pop_front(), "");
+  EXPECT_DEATH_IF_SUPPORTED(q.pop_back(), "");
 
   const absl::chunked_queue<int> cq;
   EXPECT_DEATH_IF_SUPPORTED(cq.front(), "");
