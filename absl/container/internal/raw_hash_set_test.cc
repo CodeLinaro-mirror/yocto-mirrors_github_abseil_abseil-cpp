@@ -147,6 +147,26 @@ TEST(RawHashSetLayout, SmallCapacity) {
   }
 }
 
+TEST(RawHashSetLayout, CreateForSmallNonSooGrowth) {
+  for (size_t size : {0u, 1u}) {
+    for (size_t slot_align : {1u, 2u, 4u, 8u, 16u}) {
+      for (size_t slot_size : {slot_align, slot_align * 2, slot_align * 3}) {
+        for (bool has_infoz : {false, true}) {
+          RawHashSetLayout expected(NextCapacity(size), slot_size, slot_align,
+                                    has_infoz, /*blocked_element_count=*/0);
+          RawHashSetLayout actual =
+              RawHashSetLayout::CreateForSmallNonSooGrowth(
+                  size, slot_size, slot_align, has_infoz);
+          EXPECT_EQ(actual.control_offset(), expected.control_offset());
+          EXPECT_EQ(actual.generation_offset(), expected.generation_offset());
+          EXPECT_EQ(actual.slot_offset(), expected.slot_offset());
+          EXPECT_EQ(actual.alloc_size(), expected.alloc_size());
+        }
+      }
+    }
+  }
+}
+
 void VerifyMiddleSizeTableLayout(size_t capacity, size_t slot_size,
                                  size_t slot_align, bool has_infoz,
                                  size_t blocked_element_count,
@@ -1326,6 +1346,12 @@ using NonMemcpyableSooIntCustomAllocTable =
 TEST(Table, EmptyFunctorOptimization) {
   static_assert(std::is_empty_v<std::equal_to<absl::string_view>>);
   static_assert(std::is_empty_v<std::allocator<int>>);
+#if defined(_MSC_VER) && _MSC_VER < 1929
+  // ABSL_ATTRIBUTE_NO_UNIQUE_ADDRESS expands to nothing for MSVC compatibility
+  // versions below 19.29 (e.g. clang with `-fms-compatibility-version=19.25`),
+  // so empty functors still take space.
+  GTEST_SKIP() << "ABSL_ATTRIBUTE_NO_UNIQUE_ADDRESS is a no-op.";
+#endif
 
   struct MockTable {
     uint64_t size;
