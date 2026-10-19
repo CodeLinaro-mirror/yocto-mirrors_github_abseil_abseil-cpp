@@ -213,7 +213,6 @@
 #include "absl/base/prefetch.h"
 #include "absl/container/internal/common.h"  // IWYU pragma: export // for node_handle
 #include "absl/container/internal/common_policy_traits.h"
-#include "absl/container/internal/compressed_tuple.h"
 #include "absl/container/internal/container_memory.h"
 #include "absl/container/internal/hash_function_defaults.h"
 #include "absl/container/internal/hash_policy_traits.h"
@@ -1207,6 +1206,13 @@ class RawHashSetLayout {
     alloc_size_ = slot_offset_ + (capacity - blocked_element_count) * slot_size;
   }
 
+  // Creates a layout for a small non-SOO table growing from capacity
+  // 0 -> 1 (`size == 0`) or 1 -> 3 (`size == 1`).
+  static RawHashSetLayout CreateForSmallNonSooGrowth(size_t size,
+                                                     size_t slot_size,
+                                                     size_t slot_align,
+                                                     bool has_infoz);
+
   // Returns precomputed offset from the start of the backing allocation of
   // control.
   size_t control_offset() const { return control_offset_; }
@@ -1224,6 +1230,8 @@ class RawHashSetLayout {
   size_t alloc_size() const { return alloc_size_; }
 
  private:
+  explicit RawHashSetLayout(uninitialized_tag_t) {}
+
   size_t control_offset_;
   size_t generation_offset_;
   size_t slot_offset_;
@@ -1893,53 +1901,27 @@ inline probe_seq<Group::kWidth> probe(const CommonFields& common, size_t hash) {
 constexpr size_t kProbedElementIndexSentinel = ~size_t{};
 
 // Implementation detail of transfer_unprobed_elements_to_next_capacity_fn.
-// Tries to find the new index for an element whose hash corresponds to
-// `h1` for growth to the next capacity.
-// Returns kProbedElementIndexSentinel if full probing is required.
+// Tries to find the new index for an element with `hash` for growth to the next
+// capacity.
+// Returns kProbedElementIndexSentinel if element was probed in the table before
+// growth.
 //
 // If element is located in the first probing group in the table before growth,
 // returns one of two positions: `old_index` or `old_index + old_capacity + 1`.
-//
-// Otherwise, we will try to insert it into the first probe group of the new
-// table. We only attempt to do so if the first probe group is already
-// initialized.
 template <typename = void>
-inline size_t TryFindNewIndexWithoutProbing(size_t h1, size_t old_index,
+inline size_t TryFindNewIndexWithoutProbing(size_t hash, size_t old_index,
                                             size_t old_capacity,
-                                            ctrl_t* new_ctrl,
                                             size_t new_capacity) {
-  size_t index_diff = old_index - h1;
+  size_t h1 = H1(hash);
   // The first probe group starts with h1 & capacity.
   // All following groups start at (h1 + Group::kWidth * K) & capacity.
-  // We can find an index within the floating group as index_diff modulo
-  // Group::kWidth.
-  // Both old and new capacity are larger than Group::kWidth so we can avoid
-  // computing `& capacity`.
-  size_t in_floating_group_index = index_diff & (Group::kWidth - 1);
-  // By subtracting we will get the difference between the first probe group
-  // and the probe group corresponding to old_index.
-  index_diff -= in_floating_group_index;
-  if (ABSL_PREDICT_TRUE((index_diff & old_capacity) == 0)) {
-    size_t new_index = (h1 + in_floating_group_index) & new_capacity;
+  // If old_index is in the first probe group, (old_index - h1) & old_capacity
+  // is the index within the floating group (< Group::kWidth).
+  size_t index_diff = (old_index - h1) & old_capacity;
+  if (ABSL_PREDICT_TRUE(index_diff < Group::kWidth)) {
+    size_t new_index = (h1 + index_diff) & new_capacity;
     ABSL_ASSUME(new_index != kProbedElementIndexSentinel);
     return new_index;
-  }
-  ABSL_SWISSTABLE_ASSERT(((old_index - h1) & old_capacity) >= Group::kWidth);
-  // Try to insert element into the first probe group.
-  // new_ctrl is not yet fully initialized so we can't use regular search via
-  // find_first_non_full.
-
-  // We can search in the first probe group only if it is located in already
-  // initialized part of the table.
-  if (ABSL_PREDICT_FALSE((h1 & old_capacity) >= old_index)) {
-    return kProbedElementIndexSentinel;
-  }
-  size_t offset = h1 & new_capacity;
-  Group new_g(new_ctrl + offset);
-  if (auto mask = new_g.MaskNonFull(); ABSL_PREDICT_TRUE(mask)) {
-    size_t result = offset + mask.LowestBitSet();
-    ABSL_ASSUME(result != kProbedElementIndexSentinel);
-    return result;
   }
   return kProbedElementIndexSentinel;
 }
@@ -1995,15 +1977,18 @@ inline constexpr DeallocBackingArrayFn kStandardDeallocBackingArrayFn =
 // type-erased functions that want to do small amounts of type-specific
 // work.
 struct PolicyFunctions {
+  // 8  bytes
   uint32_t key_size;
   uint32_t value_size;
+
+  // 8  bytes
   uint32_t slot_size;
   uint16_t slot_align;
   bool soo_enabled;
   bool is_hashtablez_enabled;
-
-  // Returns the pointer to the hash function stored in the set.
-  void* (*hash_fn)(CommonFields& common);
+  // 8  bytes
+  uint32_t hasher_offset;
+  uint32_t alloc_offset;
 
   // Returns the hash of the pointed-to slot.
   HashSlotFn hash_slot;
@@ -2011,9 +1996,6 @@ struct PolicyFunctions {
   // Transfers the contents of `count` slots from src_slot to dst_slot.
   // We use ability to transfer several slots in single group table growth.
   void (*transfer_n)(void* set, void* dst_slot, void* src_slot, size_t count);
-
-  // Returns the pointer to the CharAlloc stored in the set.
-  void* (*get_char_alloc)(CommonFields& common);
 
   // Allocates n bytes for the backing store for common.
   void* (*alloc)(void* alloc, size_t n);
@@ -2031,14 +2013,24 @@ struct PolicyFunctions {
   // Different encoding is used depending on the capacity of the table.
   // See ProbedItem*Bytes classes for details.
   void (*transfer_unprobed_elements_to_next_capacity)(
-      CommonFields& common, const ctrl_t* old_ctrl, void* old_slots,
+      CommonFields& common, const ctrl_t* old_ctrl,
       // TODO(b/382423690): Try to use absl::FunctionRef here.
-      void* probed_storage,
-      void (*encode_probed_element)(void* probed_storage, h2_t h2,
-                                    size_t source_offset, size_t h1));
+      void* probed_storage, void* old_slots, size_t old_capacity,
+      void (*encode_probed_element)(void* probed_storage, size_t hash,
+                                    size_t source_offset));
 
   uint8_t soo_capacity() const {
     return static_cast<uint8_t>(soo_enabled ? SooCapacity() : 0);
+  }
+
+  // Returns the pointer to the hash function stored in the set.
+  const void* hash_fn(const CommonFields& common) const {
+    return reinterpret_cast<const char*>(&common) + hasher_offset;
+  }
+
+  // Returns the pointer to the CharAlloc stored in the set.
+  void* get_char_alloc(CommonFields& common) const {
+    return reinterpret_cast<char*>(&common) + alloc_offset;
   }
 };
 
@@ -2278,11 +2270,6 @@ ABSL_ATTRIBUTE_NOINLINE void TransferNRelocatable(void*, void* dst, void* src,
   // non power of 2. This would require passing the size of the slot.
   memcpy(dst, src, SizeOfSlot * count);
 }
-
-// Returns a pointer to `common`. This is used to implement type erased
-// raw_hash_set::get_hash_ref_fn and raw_hash_set::get_alloc_ref_fn for the
-// empty class cases.
-void* GetRefForEmptyClass(CommonFields& common);
 
 // Given the hash of a value not currently in the table and the first group with
 // an empty slot in the probe sequence, finds a viable slot to insert it at.
@@ -2770,13 +2757,16 @@ class raw_hash_set {
   raw_hash_set() noexcept(
       std::is_nothrow_default_constructible_v<hasher> &&
       std::is_nothrow_default_constructible_v<key_equal> &&
-      std::is_nothrow_default_constructible_v<allocator_type>) {}
+      std::is_nothrow_default_constructible_v<allocator_type>)
+      : hash_(), eq_(), alloc_() {}
 
   explicit raw_hash_set(size_t reservation_size, const hasher& hash = hasher(),
                         const key_equal& eq = key_equal(),
                         const allocator_type& alloc = allocator_type())
-      : settings_(CommonFields::CreateDefault<SooEnabled()>(), hash, eq,
-                  alloc) {
+      : common_(CommonFields::CreateDefault<SooEnabled()>()),
+        hash_(hash),
+        eq_(eq),
+        alloc_(alloc) {
     if (reservation_size > DefaultCapacity()) {
       ReserveTableToFitNewSize(common(), GetPolicyFunctions(),
                                reservation_size);
@@ -2922,11 +2912,13 @@ class raw_hash_set {
          // `that` must be left valid. If Hash is std::function<Key>, moving it
          // would create a nullptr functor that cannot be called.
          // Note: we avoid using exchange for better generated code.
-        settings_(PolicyTraits::transfer_uses_memcpy() || !that.is_full_soo()
-                      ? std::move(that.common())
-                      : CommonFields{full_soo_tag_t{},
-                                     that.common().soo_has_tried_sampling()},
-                  that.hash_ref(), that.eq_ref(), that.char_alloc_ref()) {
+        common_(PolicyTraits::transfer_uses_memcpy() || !that.is_full_soo()
+                    ? std::move(that.common())
+                    : CommonFields{full_soo_tag_t{},
+                                   that.common().soo_has_tried_sampling()}),
+        hash_(that.hash_ref()),
+        eq_(that.eq_ref()),
+        alloc_(that.char_alloc_ref()) {
     if constexpr (SooEnabled() && !PolicyTraits::transfer_uses_memcpy()) {
       if (that.is_full_soo()) {
         transfer(soo_slot(), that.soo_slot());
@@ -2938,8 +2930,10 @@ class raw_hash_set {
   }
 
   raw_hash_set(raw_hash_set&& that, const allocator_type& a)
-      : settings_(CommonFields::CreateDefault<SooEnabled()>(), that.hash_ref(),
-                  that.eq_ref(), a) {
+      : common_(CommonFields::CreateDefault<SooEnabled()>()),
+        hash_(that.hash_ref()),
+        eq_(that.eq_ref()),
+        alloc_(a) {
     if (CharAlloc(a) == that.char_alloc_ref()) {
       swap_common(that);
       common().annotate_for_bug_detection_on_move(that.common(),
@@ -3978,10 +3972,9 @@ class raw_hash_set {
         std::is_same_v<key_equal, std::equal_to<key_type>>;
     if constexpr (kIsDebug && !kIsStringAbslHashEq && !kIsScalarAbslHashEq) {
       if (empty()) return;
-      AssertHashEqConsistentImpl(
-          common(), get_hash_ref_fn(common()), get_hash_slot_fn(),
-          sizeof(slot_type), SooEnabled(), hash_of(key), &key,
-          &equal_to_key_fn<K>);
+      AssertHashEqConsistentImpl(common(), &hash_ref(), get_hash_slot_fn(),
+                                 sizeof(slot_type), SooEnabled(), hash_of(key),
+                                 &key, &equal_to_key_fn<K>);
     }
   }
 
@@ -4064,8 +4057,8 @@ class raw_hash_set {
 #endif
   }
 
-  CommonFields& common() { return settings_.template get<0>(); }
-  const CommonFields& common() const { return settings_.template get<0>(); }
+  CommonFields& common() { return common_; }
+  const CommonFields& common() const { return common_; }
 
   // For use when the capacity is potentially invalid we return
   // HashtableCapacity directly.
@@ -4113,24 +4106,33 @@ class raw_hash_set {
     return common().infoz();
   }
 
-  hasher& hash_ref() { return settings_.template get<1>(); }
-  const hasher& hash_ref() const { return settings_.template get<1>(); }
-  key_equal& eq_ref() { return settings_.template get<2>(); }
-  const key_equal& eq_ref() const { return settings_.template get<2>(); }
-  CharAlloc& char_alloc_ref() { return settings_.template get<3>(); }
-  const CharAlloc& char_alloc_ref() const {
-    return settings_.template get<3>();
-  }
+  hasher& hash_ref() { return hash_; }
+  const hasher& hash_ref() const { return hash_; }
+  key_equal& eq_ref() { return eq_; }
+  const key_equal& eq_ref() const { return eq_; }
+  CharAlloc& char_alloc_ref() { return alloc_; }
+  const CharAlloc& char_alloc_ref() const { return alloc_; }
 
-  static void* get_char_alloc_ref_fn(CommonFields& common) {
-    auto* h = reinterpret_cast<raw_hash_set*>(&common);
-    return &h->char_alloc_ref();
+  // Offsets of `hash_` and `alloc_` relative to `common_`. They are stored in
+  // `PolicyFunctions` so that type erased functions can access the hasher and
+  // the allocator given only a `CommonFields&`.
+  // `offsetof` on a non-standard-layout type (e.g. when `hasher` is
+  // not standard-layout) is conditionally-supported, but all the compilers we
+  // care about support it for direct non-static data members. Hence, we
+  // suppress the corresponding warning.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+#endif
+  static constexpr size_t HasherOffset() {
+    return offsetof(raw_hash_set, hash_) - offsetof(raw_hash_set, common_);
   }
-  static void* get_hash_ref_fn(CommonFields& common) {
-    auto* h = reinterpret_cast<raw_hash_set*>(&common);
-    // TODO(b/397453582): Remove support for const hasher.
-    return const_cast<std::remove_const_t<hasher>*>(&h->hash_ref());
+  static constexpr size_t AllocOffset() {
+    return offsetof(raw_hash_set, alloc_) - offsetof(raw_hash_set, common_);
   }
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
   static constexpr HashSlotFn get_hash_slot_fn() {
     return PolicyTraits::template get_hash_slot_fn<hasher, kIsAbslHash,
                                                    kSeedShift>();
@@ -4169,15 +4171,15 @@ class raw_hash_set {
   // by GetKey + Hash for memcpyable types.
   // TODO(b/382423690): Try to type erase for big slots: sizeof(slot_type) > 16.
   static void transfer_unprobed_elements_to_next_capacity_fn(
-      CommonFields& common, const ctrl_t* old_ctrl, void* old_slots,
-      void* probed_storage,
-      void (*encode_probed_element)(void* probed_storage, h2_t h2,
-                                    size_t source_offset, size_t h1)) {
-    const size_t new_capacity = common.capacity();
-    ABSL_ASSUME(new_capacity > kMaxSmallCapacity);
-    const size_t old_capacity = PreviousCapacity(new_capacity);
+      CommonFields& common, const ctrl_t* old_ctrl, void* probed_storage,
+      void* old_slots, size_t old_capacity,
+      void (*encode_probed_element)(void* probed_storage, size_t hash,
+                                    size_t source_offset)) {
     ABSL_ASSUME(old_capacity + 1 >= Group::kWidth);
     ABSL_ASSUME((old_capacity + 1) % Group::kWidth == 0);
+    const size_t new_capacity = NextCapacity(old_capacity);
+    ABSL_ASSUME(new_capacity > kMaxSmallCapacity);
+    ABSL_SWISSTABLE_ASSERT(common.capacity() == new_capacity);
 
     auto* set = reinterpret_cast<raw_hash_set*>(&common);
     slot_type* old_slots_ptr = to_slot(old_slots);
@@ -4199,19 +4201,17 @@ class raw_hash_set {
         // TODO(b/382423690): try to avoid entire hash calculation since we need
         // only one new bit of h1.
         size_t hash = set->hash_of(old_slot);
-        size_t h1 = H1(hash);
-        h2_t h2 = H2(hash);
         size_t new_index = TryFindNewIndexWithoutProbing(
-            h1, old_index, old_capacity, new_ctrl, new_capacity);
+            hash, old_index, old_capacity, new_capacity);
         // Note that encode_probed_element is allowed to use old_ctrl buffer
         // till and included the old_index.
         if (ABSL_PREDICT_FALSE(new_index == kProbedElementIndexSentinel)) {
-          encode_probed_element(probed_storage, h2, old_index, h1);
+          encode_probed_element(probed_storage, hash, old_index);
           continue;
         }
         ABSL_SWISSTABLE_ASSERT((new_index & old_capacity) <= old_index);
         ABSL_SWISSTABLE_ASSERT(IsEmpty(new_ctrl[new_index]));
-        new_ctrl[new_index] = static_cast<ctrl_t>(h2);
+        new_ctrl[new_index] = static_cast<ctrl_t>(H2(hash));
         auto* new_slot = new_slots + new_index;
         SanitizerUnpoisonMemoryRegion(new_slot, sizeof(slot_type));
         set->transfer(new_slot, old_slot);
@@ -4250,37 +4250,45 @@ class raw_hash_set {
                   size_t{(std::numeric_limits<uint32_t>::max)()});
     static_assert(sizeof(value_type) <=
                   size_t{(std::numeric_limits<uint32_t>::max)()});
+    static_assert(HasherOffset() <=
+                  size_t{(std::numeric_limits<uint32_t>::max)()});
+    static_assert(AllocOffset() <=
+                  size_t{(std::numeric_limits<uint32_t>::max)()});
     static constexpr size_t kBackingArrayAlignment =
         BackingArrayAlignment(alignof(slot_type));
     static constexpr PolicyFunctions value = {
         static_cast<uint32_t>(sizeof(key_type)),
         static_cast<uint32_t>(sizeof(value_type)),
         static_cast<uint32_t>(sizeof(slot_type)),
-        static_cast<uint16_t>(alignof(slot_type)), SooEnabled(),
+        static_cast<uint16_t>(alignof(slot_type)),
+        SooEnabled(),
         HashtablezForTableEnabled(),
-        // TODO(b/328722020): try to type erase
-        // for standard layout and alignof(Hash) <= alignof(CommonFields).
-        std::is_empty_v<hasher> ? &GetRefForEmptyClass
-                                : &raw_hash_set::get_hash_ref_fn,
+        static_cast<uint32_t>(HasherOffset()),
+        static_cast<uint32_t>(AllocOffset()),
         get_hash_slot_fn(),
         PolicyTraits::transfer_uses_memcpy()
             ? TransferNRelocatable<sizeof(slot_type)>
             : &raw_hash_set::transfer_n_slots_fn,
-        std::is_empty_v<Alloc> ? &GetRefForEmptyClass
-                               : &raw_hash_set::get_char_alloc_ref_fn,
         &AllocateBackingArray<kBackingArrayAlignment, CharAlloc>,
         get_dealloc_backing_array_fn(),
         &raw_hash_set::transfer_unprobed_elements_to_next_capacity_fn};
     return value;
   }
 
-  // Bundle together CommonFields plus other objects which might be empty.
-  // CompressedTuple will ensure that sizeof is not affected by any of the
-  // empty fields that occur after CommonFields.
-  absl::container_internal::CompressedTuple<CommonFields, hasher, key_equal,
-                                            CharAlloc>
-      settings_{CommonFields::CreateDefault<SooEnabled()>(), hasher{},
-                key_equal{}, CharAlloc{}};
+  // `common_` must be the first member: type erased functions cast
+  // `CommonFields*` to `raw_hash_set*`.
+  CommonFields common_ = CommonFields::CreateDefault<SooEnabled()>();
+  // ABSL_ATTRIBUTE_NO_UNIQUE_ADDRESS ensures that sizeof is not affected by any
+  // of the fields below if they are empty.
+  //
+  // Note: these members must not have default member initializers and must be
+  // initialized in the constructor mem-initializer lists instead. MSVC
+  // miscompiles `[[msvc::no_unique_address]]` members with default member
+  // initializers and overwrites bytes of the overlapping `common_`:
+  // https://developercommunity.visualstudio.com/t/miscompilation-with-msvcno-unique-address-and-defa/1699750
+  ABSL_ATTRIBUTE_NO_UNIQUE_ADDRESS hasher hash_;
+  ABSL_ATTRIBUTE_NO_UNIQUE_ADDRESS key_equal eq_;
+  ABSL_ATTRIBUTE_NO_UNIQUE_ADDRESS CharAlloc alloc_;
 };
 
 // Friend access for free functions in raw_hash_set.h.
@@ -4461,10 +4469,9 @@ extern template void Destruct</*kSooEnabled=*/false>(CommonFields& c,
 // Extern template for inline function keeps possibility of inlining.
 // When compiler decided to not inline, no symbols will be added to the
 // corresponding translation unit.
-extern template size_t TryFindNewIndexWithoutProbing(size_t h1,
+extern template size_t TryFindNewIndexWithoutProbing(size_t hash,
                                                      size_t old_index,
                                                      size_t old_capacity,
-                                                     ctrl_t* new_ctrl,
                                                      size_t new_capacity);
 extern template void AssertIsFull(const ctrl_t* const& ctrl, const void* slot,
                                   GenerationType generation,
