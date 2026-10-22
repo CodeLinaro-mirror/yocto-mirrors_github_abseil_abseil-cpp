@@ -473,4 +473,16 @@ TEST(IsConstantEvaluated, is_constant_evaluated) {
 #endif  // ABSL_HAVE_CONSTANT_EVALUATED
 }
 
+TEST(ShouldPreferPassByValue, Basic) {
+  using absl::type_traits_internal::ShouldPreferPassByValue;
+  static_assert(ShouldPreferPassByValue<int>::value);
+  static_assert(ShouldPreferPassByValue<void*>::value);
+  static_assert(ShouldPreferPassByValue<std::string_view>::value);
+  static_assert(ShouldPreferPassByValue<std::tuple<int, int>>::value);
+  static_assert(!ShouldPreferPassByValue<void>::value);
+  static_assert(!ShouldPreferPassByValue<char[3]>::value);
+  static_assert(!ShouldPreferPassByValue<char[4]>::value);
+  static_assert(!ShouldPreferPassByValue<std::string>::value);
+}
+
 }  // namespace
