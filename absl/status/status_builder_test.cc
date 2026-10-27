@@ -367,6 +367,10 @@ TEST_F(StatusBuilderTest, SetErrorCode) {
   LOG(INFO) << "Builder code: " << builder;
   EXPECT_FALSE(builder.ok());
   EXPECT_EQ(builder.code(), absl::StatusCode::kResourceExhausted);
+  builder.SetCode(absl::StatusCode::kOk);
+  EXPECT_TRUE(builder.ok());
+  EXPECT_EQ(builder.code(), absl::StatusCode::kOk);
+  EXPECT_EQ(ToStatus(builder), absl::OkStatus());
 }
 
 TEST_F(StatusBuilderTest, BuilderToStatusOrStatusShouldGiveErrorStatusOr) {
