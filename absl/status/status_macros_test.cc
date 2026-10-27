@@ -400,6 +400,77 @@ TEST(AssignOrReturn, ChainSourceLocationWith3ArgStatusMacro) {
   CheckSourceLocation(result.status(), {func3_line, func4_line});
 }
 
+TEST(AssignOrReturn, DestroysValueOnlyOnOkAtScopeExit) {
+  // Counts live `Counted` instances, so the test can observe exactly when the
+  // value held in the macro's hidden `StatusOr` storage is destroyed.
+  int live = 0;
+  struct Counted {
+    int* live;
+    explicit Counted(int* l) : live(l) { ++*live; }
+    // Both copy and move construction count, so every instance is tracked,
+    // including the moved-from one that the macro leaves in its hidden
+    // `StatusOr` storage (it is still an object and is still destroyed). The
+    // move constructor cannot be deleted: the macro moves the value out, and
+    // `StatusOr<Counted>(Counted(...))` moves it in. Assignment is deleted so
+    // no instance can be overwritten without going through these constructors.
+    Counted(const Counted& o) : live(o.live) { ++*live; }
+    Counted(Counted&& o) : live(o.live) { ++*live; }
+    Counted& operator=(const Counted&) = delete;
+    Counted& operator=(Counted&&) = delete;
+    ~Counted() { --*live; }
+  };
+
+  const std::string kLong(64, 'x');
+  auto ok_fn = [&]() -> absl::Status {
+    ABSL_ASSIGN_OR_RETURN(Counted c [[maybe_unused]],
+                          absl::StatusOr<Counted>(Counted(&live)));
+    // `live` is 2 because exactly two instances exist here:
+    //  1. the (moved-from) one inside the macro's hidden `StatusOr` storage,
+    //     which the macro deliberately keeps alive until scope exit so that
+    //     views into it (like `view` below) remain valid, and
+    //  2. `c`, move-constructed from it by the macro.
+    // The temporaries `Counted(&live)` and `StatusOr<Counted>(...)` are gone:
+    // the first was destroyed at the end of its full-expression and the second
+    // was constructed directly into the hidden storage (copy elision).
+    EXPECT_EQ(live, 2);
+    ABSL_ASSIGN_OR_RETURN(absl::string_view view,
+                          absl::StatusOr<std::string>(kLong));
+    // `view` points into the hidden `StatusOr<std::string>`.
+    EXPECT_EQ(view, kLong);
+    return absl::OkStatus();
+  };
+  EXPECT_EQ(ok_fn(), absl::OkStatus());
+  // Both instances were destroyed exactly once at scope exit.
+  EXPECT_EQ(live, 0);
+
+  // On error the `StatusOr` holds no value, so `~Counted()` must not run and
+  // nothing may leak.
+  auto err_fn = [&]() -> absl::Status {
+    ABSL_ASSIGN_OR_RETURN(Counted c [[maybe_unused]],
+                          absl::StatusOr<Counted>(ReturnError("EXPECTED")));
+    return absl::OkStatus();
+  };
+  EXPECT_THAT(err_fn().message(), Eq("EXPECTED"));
+  EXPECT_EQ(live, 0);
+}
+
+TEST(AssignOrReturn, WorksWithStatusOrSubclass) {
+  // Types derived from `absl::StatusOr` do not match the specialized storage
+  // and must still work through the generic one, which runs the full
+  // destructor.
+  struct DerivedStatusOr : absl::StatusOr<std::string> {
+    using absl::StatusOr<std::string>::StatusOr;
+  };
+  const std::string kLong(64, 'y');
+  auto fn = [&]() -> absl::Status {
+    ABSL_ASSIGN_OR_RETURN(std::string s, DerivedStatusOr(kLong));
+    EXPECT_EQ(s, kLong);
+    ABSL_ASSIGN_OR_RETURN(s, DerivedStatusOr(ReturnError("EXPECTED")));
+    return absl::OkStatus();
+  };
+  EXPECT_THAT(fn().message(), Eq("EXPECTED"));
+}
+
 TEST(ReturnIfError, Works) {
   auto func = []() -> absl::Status {
     ABSL_RETURN_IF_ERROR(ReturnOk());

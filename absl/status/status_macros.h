@@ -22,6 +22,7 @@
 #define ABSL_STATUS_STATUS_MACROS_H_
 
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -201,6 +202,43 @@ struct IsAllowedStatusOrMacroType<
            T*, typename absl::StatusOr<typename T::value_type>*>>>
     : std::true_type {};
 
+// Runs `~T()` without running `~StatusOr()`.
+template <typename T>
+struct ValueDestroyer {
+  T* value;
+  ABSL_ATTRIBUTE_ALWAYS_INLINE ~ValueDestroyer() { value->~T(); }
+};
+
+// Fallback for non-`absl::StatusOr` types allowed by
+// `IsAllowedStatusOrMacroType`.
+template <typename StatusOrType>
+union AssignOrReturnStorage {
+  StatusOrType v;
+  ~AssignOrReturnStorage() { v.~StatusOrType(); }
+  int DestroyValueOnExit() const { return 0; }
+};
+
+// Wraps `absl::StatusOr<T>` in a union with a no-op destructor so callers do
+// not emit `~StatusOr()` (`ok()` reload and `Status::Unref`) at scope exit:
+// - On error, `std::move(v).status()` moves the error out before returning.
+// - On OK, `DestroyValueOnExit()` destroys only `T` at scope exit.
+template <typename T>
+union AssignOrReturnStorage<absl::StatusOr<T>> {
+  absl::StatusOr<T> v;
+  ABSL_ATTRIBUTE_ALWAYS_INLINE ~AssignOrReturnStorage() {}
+
+  ABSL_ATTRIBUTE_ALWAYS_INLINE auto DestroyValueOnExit() {
+    if constexpr (std::is_trivially_destructible_v<T>) {
+      return 0;
+    } else {
+      return ValueDestroyer<T>{std::addressof(*v)};
+    }
+  }
+};
+
+template <typename T>
+AssignOrReturnStorage(T&&) -> AssignOrReturnStorage<std::decay_t<T>>;
+
 }  // namespace status_macro_internal
 ABSL_NAMESPACE_END
 }  // namespace absl
@@ -221,7 +259,8 @@ ABSL_NAMESPACE_END
       lhs, rexpr,                                                              \
       return_keyword absl::Status(                                             \
           std::move(ABSL_INTERNAL_STATUS_MACROS_IMPL_CONCAT_(_status_or_value, \
-                                                             __LINE__))        \
+                                                             __LINE__)         \
+                        .v)                                                    \
               .status(),                                                       \
           absl::SourceLocation::current()))
 
@@ -232,18 +271,43 @@ ABSL_NAMESPACE_END
       lhs, rexpr, /* NOLINTNEXTLINE(misc-const-correctness) */                 \
       absl::StatusBuilder _(                                                   \
           std::move(ABSL_INTERNAL_STATUS_MACROS_IMPL_CONCAT_(_status_or_value, \
-                                                             __LINE__))        \
+                                                             __LINE__)         \
+                        .v)                                                    \
               .status(),                                                       \
           absl::SourceLocation::current());                                    \
       (void)_; /* error_expression is allowed to not use this variable */      \
       return_keyword(error_expression))
 
+// Expands (simplified) to:
+//
+//   AssignOrReturnStorage statusor = {(rexpr)};                       // (1)
+//   if (!statusor.v.ok()) { error_expression; }                       // (2)
+//   const auto statusor_destroyer = statusor.DestroyValueOnExit();    // (3)
+//   lhs = *std::move(statusor.v);                                     // (4)
+//
+// (1) `statusor` is a union whose only member `v` is the `StatusOr` returned by
+//     `rexpr`. Brace-initializing the union from `rexpr` constructs the
+//     `StatusOr` directly in `v` (guaranteed copy elision), and the union's
+//     destructor is a no-op, so no `~StatusOr()` is emitted for `statusor` on
+//     any path out of the enclosing scope.
+// (2) On error, the `Status` is moved out of `statusor.v` and the function
+//     returns. The moved-from `StatusOr` needs no cleanup.
+// (3) On success, a guard is created whose destructor destroys only the value
+//     `T` held in `statusor.v` (nothing at all if `T` is trivially
+//     destructible). It is declared after the early return, so it only exists
+//     on the OK path, and before `lhs`, so it is destroyed after `lhs` at scope
+//     exit. `lhs` may therefore be a view (e.g. `absl::string_view`) into the
+//     value, which stays alive until then.
+// (4) The value is moved from `statusor.v` into `lhs`. The moved-from value
+//     remains in `statusor.v` until the guard from (3) destroys it.
 #define ABSL_INTERNAL_STATUS_MACROS_IMPL_ASSIGN_OR_RETURN_(                  \
     statusor, lhs, rexpr, error_expression)                                  \
-  auto statusor = (rexpr);                                                   \
-  if (ABSL_PREDICT_FALSE(!statusor.ok())) {                                  \
+  absl::status_macro_internal::AssignOrReturnStorage statusor = {(rexpr)};   \
+  if (ABSL_PREDICT_FALSE(!statusor.v.ok())) {                                \
     error_expression;                                                        \
   }                                                                          \
+  [[maybe_unused]] const auto ABSL_INTERNAL_STATUS_MACROS_IMPL_CONCAT_(      \
+      statusor, _destroyer) = statusor.DestroyValueOnExit();                 \
   {                                                                          \
     static_assert(!HasPotentialConditionalOperator(#lhs, sizeof(#lhs) - 1),  \
                   "Identified potential conditional operator, consider not " \
@@ -252,11 +316,11 @@ ABSL_NAMESPACE_END
   {                                                                          \
     static_assert(                                                           \
         absl::status_macro_internal::IsAllowedStatusOrMacroType<             \
-            std::remove_const_t<decltype(statusor)>>(),                      \
+            decltype(statusor.v)>(),                                         \
         "ABSL_ASSIGN_OR_RETURN should only be used with absl::StatusOr<>");  \
   }                                                                          \
   ABSL_INTERNAL_STATUS_MACROS_IMPL_UNPARENTHESIZE_IF_PARENTHESIZED(lhs) =    \
-      (*std::move(statusor))
+      (*std::move(statusor.v))
 
 // Internal helpers for macro expansion.
 #define ABSL_INTERNAL_STATUS_MACROS_IMPL_EAT(...)
