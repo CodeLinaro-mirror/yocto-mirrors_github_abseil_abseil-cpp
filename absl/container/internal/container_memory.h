@@ -25,6 +25,7 @@
 #include <type_traits>
 #include <utility>
 
+#include "absl/base/attributes.h"
 #include "absl/base/config.h"
 #include "absl/hash/hash.h"
 #include "absl/memory/memory.h"
@@ -537,7 +538,9 @@ struct map_slot_policy {
 // Useful for usage with policy traits.
 template <class Hash, bool kIsAbsl, size_t kSeedShift>
 struct HashElement {
-  HashElement(const Hash& h, size_t s) : hash(h), seed(s >> kSeedShift) {}
+  HashElement(type_traits_internal::AddConstRefIfExpensiveToCopy<Hash> h,
+              size_t s)
+      : hash(h), seed(s >> kSeedShift) {}
 
   template <class K, class... Args>
   size_t operator()(const K& key, Args&&...) const {
@@ -550,9 +553,8 @@ struct HashElement {
     // NOLINTNEXTLINE(clang-diagnostic-sign-conversion)
     return hash(key) ^ seed;
   }
-  // TODO(ezb): try using AddConstRefIfExpensiveToCopy and
-  // ABSL_ATTRIBUTE_NO_UNIQUE_ADDRESS for `hash`/`eq` functor members.
-  const Hash& hash;
+  ABSL_ATTRIBUTE_NO_UNIQUE_ADDRESS
+  type_traits_internal::AddConstRefIfExpensiveToCopy<Hash> hash;
   size_t seed;
 };
 
@@ -567,7 +569,8 @@ struct HashKey {
   static size_t GetHash(void* data, size_t seed) {
     return (*static_cast<const HashKey*>(data))(seed);
   }
-  const Hash& hash;
+  ABSL_ATTRIBUTE_NO_UNIQUE_ADDRESS
+  type_traits_internal::AddConstRefIfExpensiveToCopy<Hash> hash;
   type_traits_internal::AddConstRefIfExpensiveToCopy<Key> key;
 };
 
@@ -580,7 +583,8 @@ struct EqualElement {
     ABSL_SWISSTABLE_IGNORE_UNINITIALIZED_RETURN(eq(lhs, rhs));
   }
   type_traits_internal::AddConstRefIfExpensiveToCopy<K1> rhs;
-  const KeyEqual& eq;
+  ABSL_ATTRIBUTE_NO_UNIQUE_ADDRESS
+  type_traits_internal::AddConstRefIfExpensiveToCopy<KeyEqual> eq;
 };
 
 // Type erased function for computing hash of the slot.
