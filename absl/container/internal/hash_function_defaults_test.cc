@@ -23,6 +23,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "gtest/gtest.h"
@@ -282,6 +283,16 @@ struct NoDeleter {
   void operator()(const T* ptr) const {}
 };
 
+struct ConvertibleToPtr {
+  int* ptr;
+  operator int*() const { return ptr; }  // NOLINT
+};
+
+struct ConvertibleToConstPtr {
+  const int* ptr;
+  operator const int*() const { return ptr; }  // NOLINT
+};
+
 using PointerTypes =
     ::testing::Types<const int*, int*, std::unique_ptr<const int>,
                      std::unique_ptr<const int, NoDeleter>,
@@ -317,11 +328,15 @@ TYPED_TEST(EqPointer, Works) {
   EXPECT_TRUE(eq(ptr, uptr));
   EXPECT_TRUE(eq(ptr, csptr));
   EXPECT_TRUE(eq(ptr, cuptr));
+  EXPECT_TRUE(eq(ptr, ConvertibleToPtr{ptr}));
+  EXPECT_TRUE(eq(ptr, ConvertibleToConstPtr{ptr}));
   EXPECT_FALSE(eq(&dummy, cptr));
   EXPECT_FALSE(eq(&dummy, sptr));
   EXPECT_FALSE(eq(&dummy, uptr));
   EXPECT_FALSE(eq(&dummy, csptr));
   EXPECT_FALSE(eq(&dummy, cuptr));
+  EXPECT_FALSE(eq(&dummy, ConvertibleToPtr{ptr}));
+  EXPECT_FALSE(eq(&dummy, ConvertibleToConstPtr{ptr}));
 }
 
 TEST(Hash, DerivedAndBase) {
@@ -352,6 +367,16 @@ TEST(Hash, FunctionPointer) {
   EXPECT_FALSE(eq(p1, p2));
 }
 
+TEST(Hash, PointerToTemplateWithIncompleteType) {
+  struct Incomplete;
+  using VariantPtr = const std::variant<Incomplete>*;
+  hash_default_hash<VariantPtr> hasher;
+  hash_default_eq<VariantPtr> eq;
+  VariantPtr p = nullptr;
+  EXPECT_EQ(hasher(p), hasher(nullptr));
+  EXPECT_TRUE(eq(p, nullptr));
+}
+
 TYPED_TEST(HashPointer, Works) {
   int dummy;
   auto hash = this->hasher;
@@ -367,11 +392,15 @@ TYPED_TEST(HashPointer, Works) {
   EXPECT_EQ(hash(ptr), hash(uptr));
   EXPECT_EQ(hash(ptr), hash(csptr));
   EXPECT_EQ(hash(ptr), hash(cuptr));
+  EXPECT_EQ(hash(ptr), hash(ConvertibleToPtr{ptr}));
+  EXPECT_EQ(hash(ptr), hash(ConvertibleToConstPtr{ptr}));
   EXPECT_NE(hash(&dummy), hash(cptr));
   EXPECT_NE(hash(&dummy), hash(sptr));
   EXPECT_NE(hash(&dummy), hash(uptr));
   EXPECT_NE(hash(&dummy), hash(csptr));
   EXPECT_NE(hash(&dummy), hash(cuptr));
+  EXPECT_NE(hash(&dummy), hash(ConvertibleToPtr{ptr}));
+  EXPECT_NE(hash(&dummy), hash(ConvertibleToConstPtr{ptr}));
 }
 
 TEST(EqCord, Works) {
