@@ -388,6 +388,38 @@ TEST(ApplyTest, GetTypeErasedDerefAndApplyToSlotFnCanonicalizesTypes) {
                 absl::Hash<MyEnum>{}, seed)(c)));
 }
 
+TEST(HashKeyTest, CanonicalSharesHashFn) {
+  enum class MyEnum : uint32_t { kOne = 1, kTwo = 2 };
+  using HashKeyInt32 = HashKey<absl::Hash<int32_t>, int32_t, /*kIsAbsl=*/true,
+                               /*kSeedShift=*/0, /*kUseCanonical=*/true>;
+  using HashKeyEnum = HashKey<absl::Hash<MyEnum>, MyEnum, /*kIsAbsl=*/true,
+                              /*kSeedShift=*/0, /*kUseCanonical=*/true>;
+  using HashKeyNonCanonical =
+      HashKey<absl::Hash<int32_t>, int32_t, /*kIsAbsl=*/true,
+              /*kSeedShift=*/0, /*kUseCanonical=*/false>;
+  EXPECT_EQ(HashKeyInt32::get_hash_fn(), HashKeyEnum::get_hash_fn());
+  EXPECT_NE(HashKeyInt32::get_hash_fn(), HashKeyNonCanonical::get_hash_fn());
+
+  MyEnum c = MyEnum::kTwo;
+  size_t seed = 100;
+  HashKeyEnum hk{absl::Hash<MyEnum>{}, c};
+  EXPECT_EQ(HashKeyEnum::get_hash_fn()(hk.data(), seed),
+            (HashElement<absl::Hash<MyEnum>, /*kIsAbsl=*/true, 0>(
+                absl::Hash<MyEnum>{}, seed)(c)));
+}
+
+TEST(HashKeyTest, NonCanonicalUsesHasher) {
+  auto hash = [](int32_t v) { return static_cast<size_t>(v + 42); };
+  using HashKeyCustom = HashKey<decltype(hash), int32_t, /*kIsAbsl=*/false,
+                                /*kSeedShift=*/0, /*kUseCanonical=*/false>;
+  int32_t a = 1;
+  size_t seed = 100;
+  HashKeyCustom hk{hash, a};
+  EXPECT_EQ(hk.data(), &hk);
+  EXPECT_EQ(HashKeyCustom::get_hash_fn()(hk.data(), seed),
+            (HashElement<decltype(hash), /*kIsAbsl=*/false, 0>(hash, seed)(a)));
+}
+
 TEST(HashElement, DefaultHash) {
   size_t x = 7;
   size_t seed = 100;

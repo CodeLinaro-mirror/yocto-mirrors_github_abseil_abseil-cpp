@@ -88,7 +88,7 @@
 
 #include "absl/base/config.h"
 #include "absl/functional/function_ref.h"
-#include "absl/hash/internal/hash.h"
+#include "absl/hash/internal/hash.h"  // IWYU pragma: export
 #include "absl/hash/internal/weakly_mixed_integer.h"
 #include "absl/meta/type_traits.h"
 
