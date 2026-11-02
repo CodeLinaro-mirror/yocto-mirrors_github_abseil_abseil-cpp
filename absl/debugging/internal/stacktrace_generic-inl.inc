@@ -38,6 +38,7 @@
 // can not call anything which might call malloc or mmap itself.
 static __thread int recursive = 0;
 
+#if defined(__GLIBC__)
 // The stack trace function might be invoked very early in the program's
 // execution (e.g. from the very first malloc if using tcmalloc). Also, the
 // glibc implementation itself will trigger malloc the first time it is called.
@@ -54,12 +55,17 @@ static std::atomic<bool> disable_stacktraces(true);  // Disabled until healthy.
   disable_stacktraces.store(false, std::memory_order_relaxed);
   return 0;
 }();
+#endif  // defined(__GLIBC__)
 
 template <bool IS_STACK_FRAMES, bool IS_WITH_CONTEXT>
 static int UnwindImpl(void** result, uintptr_t* frames, int* sizes,
                       int max_depth, int skip_count, const void* ucp,
                       int* min_dropped_frames) {
-  if (recursive || disable_stacktraces.load(std::memory_order_relaxed)) {
+  if (recursive
+#if defined(__GLIBC__)
+      || disable_stacktraces.load(std::memory_order_relaxed)
+#endif
+  ) {
     return 0;
   }
   ++recursive;
