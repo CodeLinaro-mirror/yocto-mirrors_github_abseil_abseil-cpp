@@ -58,6 +58,7 @@ jobs:
   test:
     runs-on: ${{ inputs.os }}
     name: (${{ matrix.std }}, ${{ matrix.compilation_mode }})
+    timeout-minutes: 45
     container:
       image: ${{ inputs.container_image }}
       options: --cap-add=SYS_PTRACE

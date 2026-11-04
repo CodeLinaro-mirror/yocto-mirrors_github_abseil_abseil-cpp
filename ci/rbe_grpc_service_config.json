@@ -1,0 +1,20 @@
+{
+  "methodConfig": [
+    {
+      "name": [
+        {"service": "build.bazel.remote.execution.v2.ActionCache"},
+        {"service": "build.bazel.remote.execution.v2.Capabilities"},
+        {"service": "build.bazel.remote.execution.v2.ContentAddressableStorage"},
+        {"service": "google.bytestream.ByteStream"},
+        {"service": "build.bazel.remote.asset.v1.Fetch"}
+      ],
+      "timeout": "1200s"
+    },
+    {
+      "name": [
+        {"service": "build.bazel.remote.execution.v2.Execution"}
+      ],
+      "timeout": "180s"
+    }
+  ]
+}
