@@ -162,6 +162,7 @@ set(ABSL_INTERNAL_DLL_FILES
   "hash/internal/city.h"
   "hash/internal/hash.cc"
   "hash/internal/hash.h"
+  "hash/internal/hash_key.h"
   "hash/internal/weakly_mixed_integer.h"
   "log/absl_check.h"
   "log/absl_log.h"

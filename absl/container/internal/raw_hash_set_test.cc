@@ -91,6 +91,10 @@ struct RawHashSetTestOnlyAccess {
   static size_t CountTombstones(const C& c) {
     return c.common().TombstonesCount();
   }
+  template <typename C>
+  static const PolicyFunctions& GetPolicyFunctions() {
+    return C::GetPolicyFunctions();
+  }
 };
 
 namespace {
@@ -5524,6 +5528,67 @@ TEST(Table, GrowExtremelyLargeTable) {
     }
   }
   EXPECT_EQ(t.capacity(), kTargetCapacity);
+}
+
+enum class Enum64 : int64_t {};
+struct ThreeInt32 {
+  int32_t a, b, c;
+};
+
+template <class Table>
+const PolicyFunctions* GetPolicyFunctionsPtr() {
+  return &RawHashSetTestOnlyAccess::GetPolicyFunctions<Table>();
+}
+
+TEST(Table, PolicyFunctionsAreSharedForRelocatableSlots) {
+  // Tables with the same slot layout and type erased slot hash function share
+  // a single `PolicyFunctions` instance.
+  const PolicyFunctions* int64_pair_policy =
+      GetPolicyFunctionsPtr<absl::flat_hash_map<int64_t, int64_t>>();
+  EXPECT_EQ(int64_pair_policy,
+            (GetPolicyFunctionsPtr<absl::flat_hash_map<uint64_t, Enum64>>()));
+  EXPECT_EQ(
+      int64_pair_policy,
+      (GetPolicyFunctionsPtr<absl::flat_hash_map<Enum64, const void*>>()));
+
+  // Different slot size.
+  EXPECT_NE(int64_pair_policy,
+            (GetPolicyFunctionsPtr<absl::flat_hash_map<int32_t, int32_t>>()));
+  // Same slot size, but different slot hash function.
+  EXPECT_NE(
+      int64_pair_policy,
+      (GetPolicyFunctionsPtr<absl::flat_hash_map<int32_t, ThreeInt32>>()));
+  // Custom allocators have a distinct `AllocPolicy`.
+  using CustomAllocTable =
+      absl::flat_hash_map<int64_t, int64_t, absl::Hash<int64_t>,
+                          std::equal_to<int64_t>,
+                          CountingAllocator<std::pair<const int64_t, int64_t>>>;
+  EXPECT_NE(int64_pair_policy, GetPolicyFunctionsPtr<CustomAllocTable>());
+}
+
+TEST(Table, GrowthWithSharedPolicyFunctions) {
+  // Exercise the shared transfer function across the growth paths from SOO up
+  // to a few resizes, including probed elements, for a few layouts.
+  constexpr int kCount = 25;
+  const auto test = [](auto table) {
+    using T = decltype(table);
+    using V = typename T::key_type;
+    for (int i = 0; i < kCount; ++i) {
+      table.insert(static_cast<V>(i));
+      ASSERT_EQ(table.size(), static_cast<size_t>(i + 1));
+    }
+    for (int i = 0; i < kCount; ++i) {
+      ASSERT_TRUE(table.contains(static_cast<V>(i))) << i;
+    }
+    ASSERT_FALSE(table.contains(static_cast<V>(kCount)));
+  };
+  test(absl::flat_hash_set<int8_t>());
+  test(absl::flat_hash_set<int16_t>());
+  test(absl::flat_hash_set<int32_t>());
+  test(absl::flat_hash_set<int64_t>());
+  test(absl::flat_hash_set<Enum64>());
+  // Non-canonical hasher that forces probing on every growth.
+  test(absl::flat_hash_set<int32_t, ZeroHash>());
 }
 
 }  // namespace

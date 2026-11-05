@@ -211,6 +211,37 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "hash_key",
+    hdrs = ["internal/hash_key.h"],
+    copts = ABSL_DEFAULT_COPTS,
+    linkopts = ABSL_DEFAULT_LINKOPTS,
+    visibility = [
+        "//absl/container:__pkg__",
+    ],
+    deps = [
+        ":hash",
+        "//absl/base",
+        "//absl/base:config",
+        "//absl/meta:type_traits",
+    ],
+)
+
+cc_test(
+    name = "hash_key_test",
+    srcs = ["internal/hash_key_test.cc"],
+    copts = ABSL_TEST_COPTS,
+    linkopts = ABSL_DEFAULT_LINKOPTS,
+    deps = [
+        ":hash",
+        ":hash_key",
+        "//absl/base:config",
+        "//absl/strings:string_view",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_test(
     name = "low_level_hash_test",
     srcs = ["internal/low_level_hash_test.cc"],

@@ -492,6 +492,7 @@ absl_cc_library(
     absl::config
     absl::core_headers
     absl::hash
+    absl::hash_key
     absl::memory
     absl::type_traits
     absl::utility

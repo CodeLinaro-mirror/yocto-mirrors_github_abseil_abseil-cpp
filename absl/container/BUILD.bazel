@@ -442,6 +442,7 @@ cc_library(
         "//absl/base:config",
         "//absl/base:core_headers",
         "//absl/hash",
+        "//absl/hash:hash_key",
         "//absl/memory",
         "//absl/meta:type_traits",
         "//absl/utility",

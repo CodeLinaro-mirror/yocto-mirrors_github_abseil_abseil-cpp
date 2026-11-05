@@ -164,6 +164,37 @@ absl_cc_library(
     absl::config
 )
 
+# Internal-only target, do not depend on directly.
+absl_cc_library(
+  NAME
+    hash_key
+  HDRS
+    "internal/hash_key.h"
+  COPTS
+    ${ABSL_DEFAULT_COPTS}
+  DEPS
+    absl::base
+    absl::config
+    absl::hash
+    absl::type_traits
+  PUBLIC
+)
+
+absl_cc_test(
+  NAME
+    hash_key_test
+  SRCS
+    "internal/hash_key_test.cc"
+  COPTS
+    ${ABSL_TEST_COPTS}
+  DEPS
+    absl::config
+    absl::hash
+    absl::hash_key
+    absl::string_view
+    GTest::gmock_main
+)
+
 absl_cc_test(
   NAME
     low_level_hash_test

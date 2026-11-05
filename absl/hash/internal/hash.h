@@ -1621,6 +1621,30 @@ template <typename T>
 struct Hash
     : std::conditional_t<is_hashable<T>::value, HashImpl<T>, PoisonedHash> {};
 
+// Unsigned integer type of size `N`, which must be 1, 2, 4, or 8.
+template <size_t N>
+struct UintOfSize {
+  static_assert(N == 1 || N == 2 || N == 4 || N == 8, "Unsupported size");
+};
+template <>
+struct UintOfSize<1> {
+  using type = uint8_t;
+};
+template <>
+struct UintOfSize<2> {
+  using type = uint16_t;
+};
+template <>
+struct UintOfSize<4> {
+  using type = uint32_t;
+};
+template <>
+struct UintOfSize<8> {
+  using type = uint64_t;
+};
+template <size_t N>
+using UintOfSizeT = typename UintOfSize<N>::type;
+
 // Returns a canonical `absl::Hash` for `T`. Types with the exact same hash
 // implementation (such as `is_uniquely_represented` types of the same size)
 // return the same hasher type, which is useful for type erasure.
@@ -1628,11 +1652,7 @@ template <typename T>
 constexpr auto CanonicalHasher() {
   if constexpr (is_uniquely_represented<T>::value &&
                 FitsIn64BitsPowerOf2<T>::value) {
-    constexpr size_t N = sizeof(T);
-    return Hash<std::conditional_t<
-        N == 1, uint8_t,
-        std::conditional_t<N == 2, uint16_t,
-                           std::conditional_t<N == 4, uint32_t, uint64_t>>>>();
+    return Hash<UintOfSizeT<sizeof(T)>>();
   } else {
     return Hash<T>();
   }
