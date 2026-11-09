@@ -15,6 +15,7 @@
 #include "absl/container/flat_hash_map.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -423,6 +424,68 @@ TEST(FlatHashMap, FlatHashMapPolicyDestroyReturnsTrue) {
           nullptr, nullptr))()));
   EXPECT_FALSE((decltype(FlatHashMapPolicy<int, std::unique_ptr<int>>::destroy<
                          std::allocator<char>>(nullptr, nullptr))()));
+}
+
+TEST(FlatHashMap, NonStandardLayoutKeyAndValueUseTypeErasedSlotFns) {
+  using Policy = FlatHashMapPolicy<NonStandardLayout, NonStandardLayout>;
+  EXPECT_NE((Policy::get_hash_slot_fn<absl::Hash<NonStandardLayout>,
+                                      /*kIsDefault=*/true, /*kSeedShift=*/0>()),
+            nullptr);
+  EXPECT_FALSE(
+      std::is_null_pointer_v<decltype(Policy::get_eq_slot_fn())>);
+
+  flat_hash_map<NonStandardLayout, NonStandardLayout> m;
+  for (int i = 0; i < 30; ++i) {
+    m.try_emplace(NonStandardLayout(std::to_string(i)),
+                  NonStandardLayout(std::to_string(i * 10)));
+  }
+  for (int i = 0; i < 30; ++i) {
+    auto it = m.find(NonStandardLayout(std::to_string(i)));
+    ASSERT_NE(it, m.end());
+    EXPECT_EQ(it->second, NonStandardLayout(std::to_string(i * 10)));
+  }
+}
+
+TEST(FlatHashMap, ConstKeyAndValueCombinations) {
+  flat_hash_map<const std::string, int> m_str;
+  m_str.reserve(10);
+  EXPECT_TRUE(m_str.try_emplace("k", 1).second);
+  EXPECT_FALSE(m_str.try_emplace("k", 2).second);
+  EXPECT_THAT(m_str, UnorderedElementsAre(Pair("k", 1)));
+
+  flat_hash_map<const int, const int> m_int;
+  m_int.reserve(10);
+  EXPECT_TRUE(m_int.try_emplace(1, 2).second);
+  EXPECT_FALSE(m_int.try_emplace(1, 3).second);
+  EXPECT_THAT(m_int, UnorderedElementsAre(Pair(1, 2)));
+}
+
+enum class CustomEqEnum : uint32_t {
+  kZero = 0,
+  kOne = 1,
+  kTwo = 2,
+  kThree = 3,
+};
+
+bool operator==(CustomEqEnum a, CustomEqEnum b) {
+  return static_cast<uint32_t>(a) % 2 == static_cast<uint32_t>(b) % 2;
+}
+
+struct CustomEqEnumHash {
+  size_t operator()(CustomEqEnum e) const {
+    return static_cast<uint32_t>(e) % 2;
+  }
+};
+
+TEST(FlatHashMap, EnumWithCustomOperatorEqAndCustomHash) {
+  flat_hash_map<CustomEqEnum, int, CustomEqEnumHash> m;
+  m.reserve(10);
+  EXPECT_TRUE(m.try_emplace(CustomEqEnum::kZero, 10).second);
+  EXPECT_FALSE(m.try_emplace(CustomEqEnum::kTwo, 20).second);
+  EXPECT_TRUE(m.try_emplace(CustomEqEnum::kOne, 11).second);
+  EXPECT_FALSE(m.try_emplace(CustomEqEnum::kThree, 33).second);
+  EXPECT_THAT(m, UnorderedElementsAre(Pair(CustomEqEnum::kZero, 10),
+                                      Pair(CustomEqEnum::kOne, 11)));
 }
 
 struct InconsistentHashEqType {

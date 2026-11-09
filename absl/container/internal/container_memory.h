@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <new>
 #include <tuple>
@@ -399,6 +400,25 @@ struct IsLayoutCompatible {
                                 LayoutCompatible<std::pair<const K, V>>();
 };
 
+// Asserts that `first` is at offset 0 of `std::pair<const K, V>` and
+// `std::pair<K, V>`. `offsetof` on a non-standard-layout type is
+// conditionally-supported, but all the compilers we care about support it for
+// direct non-static data members.
+template <class K, class V>
+constexpr void AssertPairFirstAtOffsetZero() {
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+#endif
+  using Pair = std::pair<const K, V>;
+  static_assert(offsetof(Pair, first) == 0);
+  using MutablePair = std::pair<std::remove_const_t<K>, std::remove_const_t<V>>;
+  static_assert(offsetof(MutablePair, first) == 0);
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+}
+
 }  // namespace memory_internal
 
 // The internal storage type for key-value containers like flat_hash_map.
@@ -578,7 +598,8 @@ struct HashElement {
       : hash(h), seed(s >> kSeedShift) {}
 
   template <class K, class... Args>
-  size_t operator()(const K& key, Args&&...) const {
+  ABSL_ATTRIBUTE_ALWAYS_INLINE size_t
+  operator()(const K& key, Args&&...) const {
     if constexpr (kIsAbsl) {
       // TODO(b/384509507): resolve `no header providing
       // "absl::hash_internal::SupportsHashWithSeed" is directly included`.
@@ -630,13 +651,41 @@ struct HashKey<Hash, Key, kIsAbsl, kSeedShift, /*kUseCanonical=*/true>
 template <class K1, class KeyEqual>
 struct EqualElement {
   template <class K2, class... Args>
-  bool operator()(const K2& lhs, Args&&...) const {
+  ABSL_ATTRIBUTE_ALWAYS_INLINE bool
+  operator()(const K2& lhs, Args&&...) const {
     ABSL_SWISSTABLE_IGNORE_UNINITIALIZED_RETURN(eq(lhs, rhs));
   }
   type_traits_internal::AddConstRefIfExpensiveToCopy<K1> rhs;
   ABSL_ATTRIBUTE_NO_UNIQUE_ADDRESS
   type_traits_internal::AddConstRefIfExpensiveToCopy<KeyEqual> eq;
 };
+
+// Type-erased slot equality functor with the key at offset 0 of `slot` (or
+// `*slot` if `kDerefSlot` is true).
+template <class SlotKey, bool kDerefSlot>
+struct SlotEqKey {
+  using SlotKeyType = SlotKey;
+
+  template <class Eq, class SearchKey>
+  ABSL_ATTRIBUTE_ALWAYS_INLINE bool operator()(
+      const Eq& eq, const void* slot, const SearchKey& key) const {
+    if constexpr (kDerefSlot) {
+      const void* node;
+      // See comment in `TypeErasedDerefAndApplyToSlotFn`.
+      std::memcpy(&node, slot, sizeof(node));
+      slot = node;
+    }
+    return EqualElement<SearchKey, Eq>{key,
+                                       eq}(*static_cast<const SlotKey*>(slot));
+  }
+};
+
+// Returns a `SlotEqKey` for comparing keys with the `SlotKey` stored in a slot.
+template <class SlotKey, bool kDerefSlot>
+constexpr SlotEqKey<std::remove_const_t<SlotKey>, kDerefSlot>
+GetTypeErasedEqSlotFn() {
+  return {};
+}
 
 // Type erased function for computing hash of the slot.
 using HashSlotFn = size_t (*)(const void* hash_fn, void* slot, size_t seed);
@@ -682,8 +731,7 @@ size_t TypeErasedDerefAndApplyToSlotFn(const void* fn, void* slot_ptr,
   // NodeHashMapPolicy::get_hash_slot_fn(). In that case, slot_ptr has type
   // `std::pair<const T, mapped_type>**`, which is not safe to dereference as
   // `const T**`. Note that it is safe to dereference `slot` afterwards because
-  // `IsLayoutCompatible` guarantees that `std::pair<const T, mapped_type>` is
-  // standard-layout.
+  // `std::pair<const T, mapped_type>::first` is at offset 0.
   std::memcpy(&slot, slot_ptr, sizeof(slot));
   return HashElement<Fn, kIsAbsl, kSeedShift>{*f, seed}(*slot);
 }

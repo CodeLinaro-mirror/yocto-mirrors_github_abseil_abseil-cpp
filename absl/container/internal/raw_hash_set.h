@@ -2753,6 +2753,21 @@ class raw_hash_set_base {
     return is_soo<kSooEnabled>() && !empty_when_small();
   }
 
+  template <size_t kKeySize, size_t kSlotSize, bool kSooEnabled>
+  size_t capacity() const {
+    const size_t cap = common().capacity();
+    // Compiler complains when using functions in ASSUME so use local variables.
+    [[maybe_unused]] const bool kIsValid = IsValidCapacity(cap);
+    [[maybe_unused]] constexpr size_t kDefaultCapacity =
+        kSooEnabled ? SooCapacity() : 0;
+    [[maybe_unused]] constexpr size_t kMaxValidCapacity =
+        SizeToCapacity(container_internal::MaxValidSize(kKeySize, kSlotSize));
+    ABSL_ASSUME(kIsValid || cap == 0);
+    ABSL_ASSUME(cap >= kDefaultCapacity);
+    ABSL_ASSUME(cap <= kMaxValidCapacity);
+    return cap;
+  }
+
   template <bool kSooEnabled, bool kIsDefaultAlloc>
   void* single_slot() {
     ABSL_SWISSTABLE_ASSERT(is_small());
@@ -2793,6 +2808,112 @@ class raw_hash_set_base {
     const size_t index =
         static_cast<size_t>(static_cast<const SlotBytes*>(it.slot_) - slot_ptr);
     EraseMetaOnlyLarge(common(), index, kSlotSize);
+  }
+
+  template <class KeyType, class Hash>
+  static constexpr bool IsAbslHash() {
+    // Ignore `const` so that `key_type` and the non-const `SlotKeyType` used by
+    // the shared `find_or_prepare_insert_large` give the same result.
+    using NonConstKey = std::remove_const_t<KeyType>;
+    return std::is_same_v<Hash, absl::Hash<NonConstKey>> ||
+           // Default hasher of `const K`, e.g. in `flat_hash_map<const K, V>`.
+           std::is_same_v<Hash, absl::Hash<const NonConstKey>> ||
+           (!HasAbslContainerHash<NonConstKey>::value &&
+            std::is_same_v<Hash, typename absl::container_internal::HashEq<
+                                     NonConstKey>::Hash>) ||
+           // Note: this is useful (in addition to the above case) for cases of
+           // `absl_container_hash =
+           // DefaultHashContainerHash<absl::string_view>`.
+           std::is_same_v<Hash, absl::container_internal::StringHash> ||
+           // TODO(b/384509507): resolve `no header providing
+           // "absl::hash_internal::TransparentHash" is directly included`.
+           // Maybe we should make "internal/hash.h" be a separate library.
+           is_instance_of<Hash, absl::hash_internal::TransparentHash>::value;
+  }
+
+  // Hashing parameters shared by `raw_hash_set` and the type-erased
+  // `find_or_prepare_insert_large`.
+  template <class Hash, class SlotKey>
+  struct HashParams {
+    static constexpr bool kIsAbsl = IsAbslHash<SlotKey, Hash>();
+    // For non-default hashers the seed is xor'ed with the hash value rather
+    // than being used as a seed for the hash function. Because we require
+    // random iteration order for small tables, the seed must have entropy in
+    // its low bits. For default absl::Hash, the pre-shifted `data_ & kSeedMask`
+    // value can be passed directly without a right shift.
+    static constexpr size_t kSeedShift =
+        kIsAbsl ? 0 : HashtableInlineData::kSeedShift;
+    // When `kIsAbsl` is true, `Hash` hashes `SlotKey` identically to
+    // `absl::Hash<SlotKey>` (see `GetTypeErasedApplyToSlotFn`), but may convert
+    // other lookup keys first (e.g. `const char*` for `StringHash`).
+    template <class K>
+    using HashKeyFor =
+        HashKey<Hash, K, kIsAbsl, kSeedShift,
+                /*kUseCanonical=*/kIsAbsl && std::is_same_v<K, SlotKey>>;
+  };
+
+  // `HashOrVoid` is void for `hash_default_hash<SlotKeyType>`, which keeps
+  // mangled names short. `policy` is a runtime argument so that tables that
+  // differ only in other policy functions share one instantiation.
+  template <size_t kSlotSize, bool kIsDefaultAlloc, bool kSooEnabled,
+            class HashOrVoid, size_t kHasherOffset,
+            class EqOrVoid, size_t kEqOffset,
+            class SlotEq, class Key>
+  std::pair<void*, bool> find_or_prepare_insert_large(
+      const PolicyFunctions& policy, Key key) {
+    using SlotKeyType = typename SlotEq::SlotKeyType;
+    using Hash = std::conditional_t<std::is_void_v<HashOrVoid>,
+                                    hash_default_hash<SlotKeyType>, HashOrVoid>;
+    using Params = HashParams<Hash, SlotKeyType>;
+    using Eq = std::conditional_t<std::is_void_v<EqOrVoid>,
+                                  hash_default_eq<SlotKeyType>, EqOrVoid>;
+
+    prefetch_heap_block<kIsDefaultAlloc>();
+    const Hash& hash_ref = *reinterpret_cast<const Hash*>(
+        reinterpret_cast<const char*>(this) + kHasherOffset);
+    const Eq& eq_ref = *reinterpret_cast<const Eq*>(
+        reinterpret_cast<const char*>(this) + kEqOffset);
+    const size_t hash = HashElement<Hash, Params::kIsAbsl, Params::kSeedShift>{
+        hash_ref, common().seed().seed()}(key);
+    const size_t cap = capacity<sizeof(SlotKeyType), kSlotSize, kSooEnabled>();
+    auto seq = probe(ProbeCapacity{cap}, hash);
+    const h2_t h2 = H2(hash);
+    const ctrl_t* ctrl = control<kIsDefaultAlloc>();
+    using SlotBytes = char[kSlotSize];
+    auto* slot_array =
+        static_cast<SlotBytes*>(this->slot_array<kIsDefaultAlloc>(cap));
+    while (true) {
+      // Loading the group before slot prefetch decreases critical path latency.
+      Group g{ctrl + seq.offset()};
+#ifndef ABSL_HAVE_MEMORY_SANITIZER
+      absl::PrefetchToLocalCache(slot_array + seq.offset());
+#endif
+      // Predict one iteration (common case for insert-hit).
+      if (auto match = g.Match(h2); ABSL_PREDICT_TRUE(match)) {
+        do {
+          void* slot = slot_array + seq.offset(*match);
+          if (ABSL_PREDICT_TRUE(SlotEq{}(eq_ref, slot, key)))
+            return {slot, false};
+        } while (ABSL_PREDICT_FALSE(++match));
+      }
+      auto mask_empty = g.MaskEmpty();
+      if (ABSL_PREDICT_TRUE(mask_empty)) {
+        size_t target_group_offset = seq.offset();
+        void* slot;
+        if constexpr (SwisstableGenerationsEnabled()) {
+          using Hasher = typename Params::template HashKeyFor<Key>;
+          Hasher hash_key{hash_ref, key};
+          slot = PrepareInsertLargeGenerationsEnabled(
+              common(), policy, hash, mask_empty, target_group_offset,
+              hash_key.data(), Hasher::get_hash_fn());
+        } else {
+          slot = PrepareInsertLarge(common(), policy, hash, mask_empty,
+                                    target_group_offset);
+        }
+        return {slot, true};
+      }
+      seq.next();
+    }
   }
 };
 
@@ -2869,34 +2990,12 @@ class raw_hash_set : public raw_hash_set_base {
 
   using slot_type = typename PolicyTraits::slot_type;
 
-  constexpr static bool kIsAbslHash =
-      std::is_same_v<hasher, absl::Hash<key_type>> ||
-      (!HasAbslContainerHash<key_type>::value &&
-       std::is_same_v<hasher, typename absl::container_internal::HashEq<
-                                  key_type>::Hash>) ||
-      // Note: this is useful (in addition to the above case) for cases of
-      // `absl_container_hash = DefaultHashContainerHash<absl::string_view>`.
-      std::is_same_v<hasher, absl::container_internal::StringHash> ||
-      // TODO(b/384509507): resolve `no header providing
-      // "absl::hash_internal::TransparentHash" is directly included`.
-      // Maybe we should make "internal/hash.h" be a separate library.
-      is_instance_of<hasher, absl::hash_internal::TransparentHash>::value;
-  // For non-default hashers the seed is xor'ed with the hash value rather than
-  // being used as a seed for the hash function. Because we require random
-  // iteration order for small tables, the seed must have entropy in its low
-  // bits. For default absl::Hash, the pre-shifted `data_ & kSeedMask` value can
-  // be passed directly without a right shift.
-  constexpr static size_t kSeedShift =
-      kIsAbslHash ? 0 : HashtableInlineData::kSeedShift;
-
-  // When `kIsAbslHash` is true, `hasher` hashes `key_type` identically to
-  // `absl::Hash<key_type>` (see `GetTypeErasedApplyToSlotFn`), but may convert
-  // other lookup keys first (e.g. `const char*` for `StringHash`).
+  using TableHashParams = HashParams<hasher, key_type>;
+  constexpr static bool kIsAbslHash = TableHashParams::kIsAbsl;
+  constexpr static size_t kSeedShift = TableHashParams::kSeedShift;
   template <class K>
   using HashKeyFor =
-      HashKey<hasher, absl::remove_cvref_t<K>, kIsAbslHash, kSeedShift,
-              /*kUseCanonical=*/kIsAbslHash &&
-                  std::is_same_v<absl::remove_cvref_t<K>, key_type>>;
+      typename TableHashParams::template HashKeyFor<absl::remove_cvref_t<K>>;
 
   constexpr static bool SooEnabled() {
     return FitsInSooSlot(sizeof(slot_type), alignof(slot_type));
@@ -3367,15 +3466,8 @@ class raw_hash_set : public raw_hash_set_base {
     return size;
   }
   size_t capacity() const {
-    const size_t cap = common().capacity();
-    // Compiler complains when using functions in ASSUME so use local variables.
-    [[maybe_unused]] const bool kIsValid = IsValidCapacity(cap);
-    [[maybe_unused]] const size_t kDefaultCapacity = DefaultCapacity();
-    [[maybe_unused]] const size_t kMaxValidCapacity = MaxValidCapacity();
-    ABSL_ASSUME(kIsValid || cap == 0);
-    ABSL_ASSUME(cap >= kDefaultCapacity);
-    ABSL_ASSUME(cap <= kMaxValidCapacity);
-    return cap;
+    return raw_hash_set_base::capacity<sizeof(key_type), sizeof(slot_type),
+                                       SooEnabled()>();
   }
   size_t max_size() const { return MaxValidSize(); }
 
@@ -4239,47 +4331,25 @@ class raw_hash_set : public raw_hash_set_base {
   }
 
   template <class K>
-  std::pair<slot_type*, bool> find_or_prepare_insert_large(
-      absl::type_identity_t<K> key) {
+  ABSL_ATTRIBUTE_ALWAYS_INLINE std::pair<slot_type*, bool>
+  find_or_prepare_insert_large(absl::type_identity_t<K> key) {
     static_assert(std::is_same_v<K, FindLargeKey<K>>);
-    prefetch_heap_block();
-    const size_t hash = hash_of(key);
-    const size_t cap = capacity();
-    auto seq = probe(ProbeCapacity{cap}, hash);
-    const h2_t h2 = H2(hash);
-    const ctrl_t* ctrl = control();
-    slot_type* slot_array = this->slot_array(cap);
-    while (true) {
-      // Loading the group before slot prefetch decreases critical path latency.
-      Group g{ctrl + seq.offset()};
-#ifndef ABSL_HAVE_MEMORY_SANITIZER
-      absl::PrefetchToLocalCache(slot_array + seq.offset());
-#endif
-      // Predict one iteration (common case for insert-hit).
-      if (auto match = g.Match(h2); ABSL_PREDICT_TRUE(match)) {
-        do {
-          slot_type* slot = slot_array + seq.offset(*match);
-          if (ABSL_PREDICT_TRUE(equal_to<K>(key, slot))) return {slot, false};
-        } while (ABSL_PREDICT_FALSE(++match));
-      }
-      auto mask_empty = g.MaskEmpty();
-      if (ABSL_PREDICT_TRUE(mask_empty)) {
-        size_t target_group_offset = seq.offset();
-        void* slot;
-        if constexpr (SwisstableGenerationsEnabled()) {
-          using Hasher = HashKeyFor<K>;
-          Hasher hash_key{hash_ref(), key};
-          slot = PrepareInsertLargeGenerationsEnabled(
-              common(), GetPolicyFunctions(), hash, mask_empty,
-              target_group_offset, hash_key.data(), Hasher::get_hash_fn());
-        } else {
-          slot = PrepareInsertLarge(common(), GetPolicyFunctions(), hash,
-                                    mask_empty, target_group_offset);
-        }
-        return {to_slot(slot), true};
-      }
-      seq.next();
-    }
+    using EqSlot = decltype(PolicyTraits::get_eq_slot_fn());
+    using SlotKeyType = typename EqSlot::SlotKeyType;
+    using DefaultHasher = hash_default_hash<SlotKeyType>;
+    using DefaultEq = hash_default_eq<SlotKeyType>;
+    using KeyType = type_traits_internal::AddConstRefIfExpensiveToCopy<
+        absl::remove_cvref_t<K>>;
+    auto [slot, inserted] = raw_hash_set_base::find_or_prepare_insert_large<
+        sizeof(slot_type), kIsDefaultAlloc, SooEnabled(),
+        std::conditional_t<std::is_same_v<hasher, DefaultHasher>, void, hasher>,
+        HasherOffset(),
+        std::conditional_t<std::is_same_v<key_equal, DefaultEq>, void,
+                           key_equal>,
+        EqOffset(),
+        EqSlot,
+        KeyType>(GetPolicyFunctions(), key);
+    return {to_slot(slot), inserted};
   }
 
   template <class InputIt>
@@ -4490,6 +4560,10 @@ class raw_hash_set : public raw_hash_set_base {
   static constexpr size_t HasherOffset() {
     static_assert(offsetof(raw_hash_set, common_) == 0);
     return offsetof(raw_hash_set, hash_) - offsetof(raw_hash_set, common_);
+  }
+  static constexpr size_t EqOffset() {
+    static_assert(offsetof(raw_hash_set, common_) == 0);
+    return offsetof(raw_hash_set, eq_) - offsetof(raw_hash_set, common_);
   }
   static constexpr size_t AllocOffset() {
     static_assert(offsetof(raw_hash_set, common_) == 0);

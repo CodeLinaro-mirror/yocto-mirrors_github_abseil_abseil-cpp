@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -398,6 +399,49 @@ TEST(HashKeyTest, NonCanonicalUsesHasher) {
   EXPECT_EQ(hk.data().ToPtr<HashKeyCustom>(), &hk);
   EXPECT_EQ(HashKeyCustom::get_hash_fn()(hk.data(), seed),
             (HashElement<decltype(hash), /*kIsAbsl=*/false, 0>(hash, seed)(a)));
+}
+
+TEST(EqSlotFnTest, GetTypeErasedEqSlotFn) {
+  std::string key = "a";
+  auto eq_slot =
+      GetTypeErasedEqSlotFn<const std::string, /*kDerefSlot=*/false>();
+  static_assert(std::is_empty_v<decltype(eq_slot)>);
+  std::string slot_match = "a";
+  std::string slot_mismatch = "b";
+  EXPECT_TRUE(eq_slot(std::equal_to<std::string>{}, &slot_match, key));
+  EXPECT_FALSE(eq_slot(std::equal_to<std::string>{}, &slot_mismatch, key));
+
+  auto eq_deref = GetTypeErasedEqSlotFn<std::string, /*kDerefSlot=*/true>();
+  static_assert(std::is_empty_v<decltype(eq_deref)>);
+  std::string* slot_match_ptr = &slot_match;
+  std::string* slot_mismatch_ptr = &slot_mismatch;
+  EXPECT_TRUE(eq_deref(std::equal_to<std::string>{}, &slot_match_ptr, key));
+  EXPECT_FALSE(eq_deref(std::equal_to<std::string>{}, &slot_mismatch_ptr, key));
+}
+
+TEST(EqSlotFnTest, GetTypeErasedEqSlotFnStatefulEq) {
+  struct StatefulEq {
+    int32_t offset;
+    bool operator()(int32_t lhs, int32_t rhs) const {
+      return lhs + offset == rhs;
+    }
+    bool operator()(const std::string& lhs, absl::string_view rhs) const {
+      return lhs == rhs;
+    }
+  };
+  StatefulEq eq{5};
+  int32_t key = 15;
+  auto eq_slot = GetTypeErasedEqSlotFn<int32_t, /*kDerefSlot=*/false>();
+  static_assert(std::is_empty_v<decltype(eq_slot)>);
+  int32_t slot_match = 10;
+  int32_t slot_mismatch = 15;
+  EXPECT_TRUE(eq_slot(eq, &slot_match, key));
+  EXPECT_FALSE(eq_slot(eq, &slot_mismatch, key));
+
+  absl::string_view sv = "a";
+  std::string slot_str = "a";
+  auto str_eq_slot = GetTypeErasedEqSlotFn<std::string, /*kDerefSlot=*/false>();
+  EXPECT_TRUE(str_eq_slot(eq, &slot_str, sv));
 }
 
 TEST(HashElement, DefaultHash) {
