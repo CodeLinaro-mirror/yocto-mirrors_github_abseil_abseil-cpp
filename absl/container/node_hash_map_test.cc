@@ -346,6 +346,13 @@ TEST(NodeHashMap, RecursiveTypeCompiles) {
   t.m[0] = RecursiveType{};
 }
 
+TEST(NodeHashMap, NonStandardLayoutValueUsesTypeErasedSlotFns) {
+  using Policy = NodeHashMapPolicy<int, NonStandardLayout>;
+  EXPECT_NE((Policy::get_hash_slot_fn<absl::Hash<int>, /*kIsAbsl=*/true,
+                                      /*kSeedShift=*/0>()),
+            nullptr);
+}
+
 #if defined(__cpp_lib_containers_ranges) && \
     __cpp_lib_containers_ranges >= 202202L
 TEST(NodeHashMap, FromRange) {

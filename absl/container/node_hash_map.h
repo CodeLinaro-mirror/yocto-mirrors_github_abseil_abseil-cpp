@@ -684,10 +684,8 @@ class NodeHashMapPolicy
 
   template <class Hash, bool kIsAbsl, size_t kSeedShift>
   static constexpr HashSlotFn get_hash_slot_fn() {
-    return memory_internal::IsLayoutCompatible<Key, Value>::value
-               ? GetTypeErasedDerefAndApplyToSlotFn<Hash, Key, kIsAbsl,
-                                                    kSeedShift>()
-               : nullptr;
+    memory_internal::AssertPairFirstAtOffsetZero<Key, Value>();
+    return GetTypeErasedDerefAndApplyToSlotFn<Hash, Key, kIsAbsl, kSeedShift>();
   }
 };
 }  // namespace container_internal

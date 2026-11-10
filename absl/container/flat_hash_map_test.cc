@@ -425,6 +425,24 @@ TEST(FlatHashMap, FlatHashMapPolicyDestroyReturnsTrue) {
                          std::allocator<char>>(nullptr, nullptr))()));
 }
 
+TEST(FlatHashMap, NonStandardLayoutKeyAndValueUseTypeErasedSlotFns) {
+  using Policy = FlatHashMapPolicy<NonStandardLayout, NonStandardLayout>;
+  EXPECT_NE((Policy::get_hash_slot_fn<absl::Hash<NonStandardLayout>,
+                                      /*kIsDefault=*/true, /*kSeedShift=*/0>()),
+            nullptr);
+
+  flat_hash_map<NonStandardLayout, NonStandardLayout> m;
+  for (int i = 0; i < 30; ++i) {
+    m.try_emplace(NonStandardLayout(std::to_string(i)),
+                  NonStandardLayout(std::to_string(i * 10)));
+  }
+  for (int i = 0; i < 30; ++i) {
+    auto it = m.find(NonStandardLayout(std::to_string(i)));
+    ASSERT_NE(it, m.end());
+    EXPECT_EQ(it->second, NonStandardLayout(std::to_string(i * 10)));
+  }
+}
+
 struct InconsistentHashEqType {
   InconsistentHashEqType(int v1, int v2) : v1(v1), v2(v2) {}
   template <typename H>

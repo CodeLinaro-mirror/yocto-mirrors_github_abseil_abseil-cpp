@@ -399,6 +399,25 @@ struct IsLayoutCompatible {
                                 LayoutCompatible<std::pair<const K, V>>();
 };
 
+// Asserts that `first` is at offset 0 of `std::pair<const K, V>` and
+// `std::pair<K, V>`. `offsetof` on a non-standard-layout type is
+// conditionally-supported, but all the compilers we care about support it for
+// direct non-static data members.
+template <class K, class V>
+constexpr void AssertPairFirstAtOffsetZero() {
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+#endif
+  using Pair = std::pair<const K, V>;
+  static_assert(offsetof(Pair, first) == 0);
+  using MutablePair = std::pair<std::remove_const_t<K>, std::remove_const_t<V>>;
+  static_assert(offsetof(MutablePair, first) == 0);
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+}
+
 }  // namespace memory_internal
 
 // The internal storage type for key-value containers like flat_hash_map.
@@ -682,8 +701,7 @@ size_t TypeErasedDerefAndApplyToSlotFn(const void* fn, void* slot_ptr,
   // NodeHashMapPolicy::get_hash_slot_fn(). In that case, slot_ptr has type
   // `std::pair<const T, mapped_type>**`, which is not safe to dereference as
   // `const T**`. Note that it is safe to dereference `slot` afterwards because
-  // `IsLayoutCompatible` guarantees that `std::pair<const T, mapped_type>` is
-  // standard-layout.
+  // `std::pair<const T, mapped_type>::first` is at offset 0.
   std::memcpy(&slot, slot_ptr, sizeof(slot));
   return HashElement<Fn, kIsAbsl, kSeedShift>{*f, seed}(*slot);
 }
