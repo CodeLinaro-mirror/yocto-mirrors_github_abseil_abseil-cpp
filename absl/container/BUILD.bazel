@@ -1232,7 +1232,6 @@ cc_library(
     deps = [
         ":common",
         ":common_policy_traits",
-        ":compressed_tuple",
         ":container_memory",
         ":layout",
         "//absl/base:config",
@@ -1320,6 +1319,7 @@ cc_test(
         ":btree",
         ":btree_test_common",
         "//absl/base:config",
+        "//absl/base:core_headers",
         "//absl/base:raw_logging_internal",
         "//absl/flags:flag",
         "//absl/strings:cord",
