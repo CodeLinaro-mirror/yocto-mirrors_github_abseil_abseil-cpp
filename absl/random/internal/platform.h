@@ -59,13 +59,17 @@
 // including necessary headers to support hardware AES.
 //
 // ABSL_ARCH_{X86/PPC/ARM} macros determine the platform.
-#if defined(__x86_64__) || defined(__x86_64) || defined(_M_AMD64) || \
+//
+// AArch64 is checked first because MSVC defines both _M_ARM64EC and _M_X64
+// (and _M_AMD64) when targeting ARM64EC.
+#if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64) || \
+    defined(_M_ARM64EC)
+#define ABSL_ARCH_AARCH64
+#elif defined(__x86_64__) || defined(__x86_64) || defined(_M_AMD64) || \
     defined(_M_X64)
 #define ABSL_ARCH_X86_64
 #elif defined(__i386) || defined(_M_IX86)
 #define ABSL_ARCH_X86_32
-#elif defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
-#define ABSL_ARCH_AARCH64
 #elif defined(__arm__) || defined(__ARMEL__) || defined(_M_ARM)
 #define ABSL_ARCH_ARM
 #elif defined(__powerpc64__) || defined(__PPC64__) || defined(__powerpc__) || \
@@ -99,7 +103,8 @@
 
 #if defined(ABSL_ARCH_X86_64)
 
-#if defined(__AES__) || defined(__AVX__)
+// MSVC has no -maes equivalent; its AES intrinsics are always available.
+#if defined(__AES__) || (defined(_MSC_VER) && !defined(__clang__))
 #undef ABSL_HAVE_ACCELERATED_AES
 #define ABSL_HAVE_ACCELERATED_AES 1
 #endif

@@ -875,7 +875,6 @@ absl_cc_library(
     "internal/randen_hwaes.h"
   COPTS
     ${ABSL_DEFAULT_COPTS}
-    ${ABSL_RANDOM_RANDEN_COPTS}
   LINKOPTS
     ${ABSL_DEFAULT_LINKOPTS}
   DEPS
