@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -141,6 +142,13 @@ TEST(LinkedHashMapTest, CanInsertMoveOnly) {
   auto found = m.find(2);
   ASSERT_TRUE(found != m.end());
   EXPECT_EQ(234, *found->second);
+
+  std::vector<std::pair<int, std::unique_ptr<int>>> vec;
+  vec.emplace_back(1, std::make_unique<int>(10));
+  vec.emplace_back(2, std::make_unique<int>(20));
+  linked_hash_map<int, std::unique_ptr<int>> ranged(
+      std::make_move_iterator(vec.begin()), std::make_move_iterator(vec.end()));
+  EXPECT_THAT(ranged, ElementsAre(Pair(1, Pointee(10)), Pair(2, Pointee(20))));
 }
 
 TEST(LinkedHashMapTest, CanEmplaceMoveOnly) {
@@ -157,6 +165,13 @@ TEST(LinkedHashMapTest, CanEmplaceMoveOnly) {
   auto found = m.find(2);
   ASSERT_TRUE(found != m.end());
   EXPECT_EQ(234, *found->second);
+
+  std::vector<std::pair<int, std::unique_ptr<int>>> vec;
+  vec.emplace_back(1, std::make_unique<int>(10));
+  vec.emplace_back(2, std::make_unique<int>(20));
+  linked_hash_map<int, std::unique_ptr<int>> ranged(
+      std::make_move_iterator(vec.begin()), std::make_move_iterator(vec.end()));
+  EXPECT_THAT(ranged, ElementsAre(Pair(1, Pointee(10)), Pair(2, Pointee(20))));
 }
 
 struct NoCopy {
@@ -795,6 +810,11 @@ TEST(LinkedHashMap, ExtractInsert) {
   EXPECT_EQ(node.key(), 1);
   EXPECT_EQ(node.mapped(), 17);
   EXPECT_THAT(m, ElementsAre(Pair(2, 9)));
+
+  node.mapped() = 19;
+  auto it = m.insert(m.begin(), std::move(node));
+  EXPECT_EQ(it, m.find(1));
+  EXPECT_THAT(m, ElementsAre(Pair(2, 9), Pair(1, 19)));
 }
 
 // Verify that emplacing and extracting nodes results in the same stateful
