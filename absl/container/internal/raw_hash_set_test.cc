@@ -5520,6 +5520,7 @@ TEST(Table, MaxValidSize) {
       size_t key_size = slot_size;
       size_t max_size = MaxValidSize(key_size, slot_size);
       ASSERT_LT(max_size, uint64_t{1} << 60);
+      size_t max_capacity = SizeToCapacity(max_size);
       if (key_size <= 4) {
         ASSERT_EQ(max_size, uint64_t{1} << 8 * key_size);
       } else if (i <= 21) {
@@ -5527,9 +5528,24 @@ TEST(Table, MaxValidSize) {
         ASSERT_GE(max_size,
                   (uint64_t{1} << HashtableInlineData::kSizeBitCount) - 1);
       }
+      ASSERT_LE(max_size, MaxSizeAtMaxValidCapacity(slot_size));
       ASSERT_LE(max_size, uint64_t{1} << HashtableInlineData::kSizeBitCount);
       ASSERT_LT(absl::uint128(max_size) * slot_size, uint64_t{1} << 63);
+      ASSERT_LT(absl::uint128(max_capacity) * slot_size, uint64_t{1} << 63);
+      if (max_capacity > 0) {
+        RawHashSetLayout layout(max_capacity, slot_size, /*slot_align_mask=*/0,
+                                /*has_infoz=*/true,
+                                /*blocked_element_count=*/0);
+        ASSERT_GT(layout.alloc_size(), layout.slot_offset());
+      }
     }
+    constexpr size_t kThresholdSlotSize =
+        CapacityToGrowth(MaxValidCapacity</*kSizeOfSizeT=*/8>()) /
+        MaxStorableSize();
+    EXPECT_EQ(MaxValidSize(kThresholdSlotSize, kThresholdSlotSize),
+              MaxStorableSize());
+    EXPECT_LT(MaxValidSize(kThresholdSlotSize + 1, kThresholdSlotSize + 1),
+              MaxStorableSize());
   }
   EXPECT_LT(MaxValidSize</*kSizeOfSizeT=*/4>(1, 1), 1 << 30);
   EXPECT_LT(MaxValidSize</*kSizeOfSizeT=*/4>(2, 2), 1 << 29);
