@@ -29,7 +29,6 @@ absl_cc_library(
   DEPS
     absl::common_policy_traits
     absl::compare
-    absl::compressed_tuple
     absl::config
     absl::container_common
     absl::container_memory
@@ -37,7 +36,6 @@ absl_cc_library(
     absl::core_headers
     absl::hardening
     absl::layout
-    absl::memory
     absl::raw_logging_internal
     absl::string_view
     absl::throw_delegate
@@ -77,11 +75,9 @@ absl_cc_test(
     absl::btree
     absl::btree_test_common
     absl::compare
-    absl::core_headers
     absl::flags
     absl::hash_testing
     absl::random_random
-    absl::raw_logging_internal
     absl::string_view
     absl::strings
     absl::test_allocator

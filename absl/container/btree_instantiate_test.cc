@@ -21,6 +21,7 @@
 // NOTE: There are more tests in btree_test.cc.
 // The main reason to have this file separate is to improve build times.
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -30,8 +31,8 @@
 #include <utility>
 #include <vector>
 
-#include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "absl/base/attributes.h"
 #include "absl/base/config.h"
 #include "absl/base/internal/raw_logging.h"
 #include "absl/container/btree_map.h"
@@ -189,19 +190,19 @@ class base_checker {
   }
 
   int erase(const key_type& key) {
-    int size = tree_.size();
-    int res = checker_.erase(key);
+    size_type size = tree_.size();
+    size_type res = checker_.erase(key);
     EXPECT_EQ(res, tree_.count(key));
     EXPECT_EQ(res, tree_.erase(key));
     EXPECT_EQ(tree_.count(key), 0);
     EXPECT_EQ(tree_.size(), size - res);
     erase_check(key);
-    return res;
+    return static_cast<int>(res);
   }
   iterator erase(iterator iter) {
     key_type key = iter.key();
-    int size = tree_.size();
-    int count = tree_.count(key);
+    size_type size = tree_.size();
+    size_type count = tree_.count(key);
     auto checker_iter = checker_.lower_bound(key);
     for (iterator tmp(tree_.lower_bound(key)); tmp != iter; ++tmp) {
       ++checker_iter;
@@ -220,8 +221,8 @@ class base_checker {
   }
 
   void erase(iterator begin, iterator end) {
-    int size = tree_.size();
-    int count = std::distance(begin, end);
+    size_type size = tree_.size();
+    size_type count = static_cast<size_type>(std::distance(begin, end));
     auto checker_begin = checker_.lower_bound(begin.key());
     for (iterator tmp(tree_.lower_bound(begin.key())); tmp != begin; ++tmp) {
       ++checker_begin;
@@ -262,7 +263,7 @@ class base_checker {
     }
 
     // Move through the forward iterators using decrement.
-    for (int n = tree_.size() - 1; n >= 0; --n) {
+    for (size_type n = tree_.size(); n > 0; --n) {
       iter_check(tree_iter, checker_iter);
       --tree_iter;
       --checker_iter;
@@ -278,7 +279,7 @@ class base_checker {
     }
 
     // Move through the reverse iterators using decrement.
-    for (int n = tree_.size() - 1; n >= 0; --n) {
+    for (size_type n = tree_.size(); n > 0; --n) {
       riter_check(tree_riter, checker_riter);
       --tree_riter;
       --checker_riter;
@@ -315,6 +316,7 @@ class unique_checker : public base_checker<TreeType, CheckerType> {
 
  public:
   using iterator = typename super_type::iterator;
+  using size_type = typename super_type::size_type;
   using value_type = typename super_type::value_type;
 
  public:
@@ -326,7 +328,7 @@ class unique_checker : public base_checker<TreeType, CheckerType> {
 
   // Insertion routines.
   std::pair<iterator, bool> insert(const value_type& v) {
-    int size = this->tree_.size();
+    size_type size = this->tree_.size();
     std::pair<typename CheckerType::iterator, bool> checker_res =
         this->checker_.insert(v);
     std::pair<iterator, bool> tree_res = this->tree_.insert(v);
@@ -337,7 +339,7 @@ class unique_checker : public base_checker<TreeType, CheckerType> {
     return tree_res;
   }
   iterator insert(iterator position, const value_type& v) {
-    int size = this->tree_.size();
+    size_type size = this->tree_.size();
     std::pair<typename CheckerType::iterator, bool> checker_res =
         this->checker_.insert(v);
     iterator tree_res = this->tree_.insert(position, v);
@@ -363,6 +365,7 @@ class multi_checker : public base_checker<TreeType, CheckerType> {
 
  public:
   using iterator = typename super_type::iterator;
+  using size_type = typename super_type::size_type;
   using value_type = typename super_type::value_type;
 
  public:
@@ -374,7 +377,7 @@ class multi_checker : public base_checker<TreeType, CheckerType> {
 
   // Insertion routines.
   iterator insert(const value_type& v) {
-    int size = this->tree_.size();
+    size_type size = this->tree_.size();
     auto checker_res = this->checker_.insert(v);
     iterator tree_res = this->tree_.insert(v);
     CheckPairEquals(*tree_res, *checker_res);
@@ -383,7 +386,7 @@ class multi_checker : public base_checker<TreeType, CheckerType> {
     return tree_res;
   }
   iterator insert(iterator position, const value_type& v) {
-    int size = this->tree_.size();
+    size_type size = this->tree_.size();
     auto checker_res = this->checker_.insert(v);
     iterator tree_res = this->tree_.insert(position, v);
     CheckPairEquals(*tree_res, *checker_res);
@@ -407,7 +410,7 @@ void DoTest(const char* name, T* b, const std::vector<V>& values) {
   const T& const_b = *b;
 
   // Test insert.
-  for (int i = 0; i < values.size(); ++i) {
+  for (size_t i = 0; i < values.size(); ++i) {
     mutable_b.insert(values[i]);
     mutable_b.value_check(values[i]);
   }
@@ -418,14 +421,14 @@ void DoTest(const char* name, T* b, const std::vector<V>& values) {
   // Test copy constructor.
   T b_copy(const_b);
   EXPECT_EQ(b_copy.size(), const_b.size());
-  for (int i = 0; i < values.size(); ++i) {
+  for (size_t i = 0; i < values.size(); ++i) {
     CheckPairEquals(*b_copy.find(key_of_value(values[i])), values[i]);
   }
 
   // Test range constructor.
   T b_range(const_b.begin(), const_b.end());
   EXPECT_EQ(b_range.size(), const_b.size());
-  for (int i = 0; i < values.size(); ++i) {
+  for (size_t i = 0; i < values.size(); ++i) {
     CheckPairEquals(*b_range.find(key_of_value(values[i])), values[i]);
   }
 
@@ -437,7 +440,7 @@ void DoTest(const char* name, T* b, const std::vector<V>& values) {
   b_range.clear();
   b_range.insert(b_copy.begin(), b_copy.end());
   EXPECT_EQ(b_range.size(), b_copy.size());
-  for (int i = 0; i < values.size(); ++i) {
+  for (size_t i = 0; i < values.size(); ++i) {
     CheckPairEquals(*b_range.find(key_of_value(values[i])), values[i]);
   }
 
@@ -455,7 +458,7 @@ void DoTest(const char* name, T* b, const std::vector<V>& values) {
   b_range.swap(b_copy);
   EXPECT_EQ(b_copy.size(), 0);
   EXPECT_EQ(b_range.size(), const_b.size());
-  for (int i = 0; i < values.size(); ++i) {
+  for (size_t i = 0; i < values.size(); ++i) {
     CheckPairEquals(*b_range.find(key_of_value(values[i])), values[i]);
   }
   b_range.swap(b_copy);
@@ -464,13 +467,13 @@ void DoTest(const char* name, T* b, const std::vector<V>& values) {
   swap(b_range, b_copy);
   EXPECT_EQ(b_copy.size(), 0);
   EXPECT_EQ(b_range.size(), const_b.size());
-  for (int i = 0; i < values.size(); ++i) {
+  for (size_t i = 0; i < values.size(); ++i) {
     CheckPairEquals(*b_range.find(key_of_value(values[i])), values[i]);
   }
   swap(b_range, b_copy);
 
   // Test erase via values.
-  for (int i = 0; i < values.size(); ++i) {
+  for (size_t i = 0; i < values.size(); ++i) {
     mutable_b.erase(key_of_value(values[i]));
     // Erasing a non-existent key should have no effect.
     ASSERT_EQ(mutable_b.erase(key_of_value(values[i])), 0);
@@ -481,7 +484,7 @@ void DoTest(const char* name, T* b, const std::vector<V>& values) {
 
   // Test erase via iterators.
   mutable_b = b_copy;
-  for (int i = 0; i < values.size(); ++i) {
+  for (size_t i = 0; i < values.size(); ++i) {
     mutable_b.erase(mutable_b.find(key_of_value(values[i])));
   }
 
@@ -489,7 +492,7 @@ void DoTest(const char* name, T* b, const std::vector<V>& values) {
   EXPECT_EQ(const_b.size(), 0);
 
   // Test insert with hint.
-  for (int i = 0; i < values.size(); i++) {
+  for (size_t i = 0; i < values.size(); i++) {
     mutable_b.insert(mutable_b.upper_bound(key_of_value(values[i])), values[i]);
   }
 
@@ -503,7 +506,7 @@ void DoTest(const char* name, T* b, const std::vector<V>& values) {
   // First half.
   mutable_b = b_copy;
   typename T::iterator mutable_iter_end = mutable_b.begin();
-  for (int i = 0; i < values.size() / 2; ++i) ++mutable_iter_end;
+  for (size_t i = 0; i < values.size() / 2; ++i) ++mutable_iter_end;
   mutable_b.erase(mutable_b.begin(), mutable_iter_end);
   EXPECT_EQ(mutable_b.size(), values.size() - values.size() / 2);
   const_b.verify();
@@ -511,7 +514,7 @@ void DoTest(const char* name, T* b, const std::vector<V>& values) {
   // Second half.
   mutable_b = b_copy;
   typename T::iterator mutable_iter_begin = mutable_b.begin();
-  for (int i = 0; i < values.size() / 2; ++i) ++mutable_iter_begin;
+  for (size_t i = 0; i < values.size() / 2; ++i) ++mutable_iter_begin;
   mutable_b.erase(mutable_iter_begin, mutable_b.end());
   EXPECT_EQ(mutable_b.size(), values.size() / 2);
   const_b.verify();
@@ -519,9 +522,9 @@ void DoTest(const char* name, T* b, const std::vector<V>& values) {
   // Second quarter.
   mutable_b = b_copy;
   mutable_iter_begin = mutable_b.begin();
-  for (int i = 0; i < values.size() / 4; ++i) ++mutable_iter_begin;
+  for (size_t i = 0; i < values.size() / 4; ++i) ++mutable_iter_begin;
   mutable_iter_end = mutable_iter_begin;
-  for (int i = 0; i < values.size() / 4; ++i) ++mutable_iter_end;
+  for (size_t i = 0; i < values.size() / 4; ++i) ++mutable_iter_end;
   mutable_b.erase(mutable_iter_begin, mutable_iter_end);
   EXPECT_EQ(mutable_b.size(), values.size() - values.size() / 4);
   const_b.verify();
@@ -588,7 +591,7 @@ void BtreeTest() {
   using V = typename remove_pair_const<typename T::value_type>::type;
   const std::vector<V> random_values = GenerateValuesWithSeed<V>(
       absl::GetFlag(FLAGS_test_values), 4 * absl::GetFlag(FLAGS_test_values),
-      GTEST_FLAG_GET(random_seed));
+      static_cast<uint32_t>(GTEST_FLAG_GET(random_seed)));
 
   unique_checker<T, C> container;
 
@@ -612,7 +615,7 @@ void BtreeMultiTest() {
   using V = typename remove_pair_const<typename T::value_type>::type;
   const std::vector<V> random_values = GenerateValuesWithSeed<V>(
       absl::GetFlag(FLAGS_test_values), 4 * absl::GetFlag(FLAGS_test_values),
-      GTEST_FLAG_GET(random_seed));
+      static_cast<uint32_t>(GTEST_FLAG_GET(random_seed)));
 
   multi_checker<T, C> container;
 
@@ -674,19 +677,34 @@ void BtreeMultiMapTest() {
   (void)m;
 }
 
+// Returns the extra size added by two empty members when
+// ABSL_ATTRIBUTE_NO_UNIQUE_ADDRESS expands to nothing.
+size_t NoUniqueAddressPaddingAdjustment() {
+  struct Empty1 {};
+  struct Empty2 {};
+  struct EmptyProbe {
+    void* ptr;
+    ABSL_ATTRIBUTE_NO_UNIQUE_ADDRESS Empty1 e1;
+    ABSL_ATTRIBUTE_NO_UNIQUE_ADDRESS Empty2 e2;
+  };
+  return sizeof(EmptyProbe) - sizeof(void*);
+}
+
 template <typename K, int N = 256>
 void SetTest() {
   EXPECT_EQ(sizeof(absl::btree_set<K>),
-            2 * sizeof(void*) + sizeof(typename absl::btree_set<K>::size_type));
+            2 * sizeof(void*) + sizeof(typename absl::btree_set<K>::size_type) +
+                NoUniqueAddressPaddingAdjustment());
   using BtreeSet = absl::btree_set<K>;
   BtreeTest<BtreeSet, std::set<K>>();
 }
 
 template <typename K, int N = 256>
 void MapTest() {
-  EXPECT_EQ(
-      sizeof(absl::btree_map<K, K>),
-      2 * sizeof(void*) + sizeof(typename absl::btree_map<K, K>::size_type));
+  EXPECT_EQ(sizeof(absl::btree_map<K, K>),
+            2 * sizeof(void*) +
+                sizeof(typename absl::btree_map<K, K>::size_type) +
+                NoUniqueAddressPaddingAdjustment());
   using BtreeMap = absl::btree_map<K, K>;
   BtreeTest<BtreeMap, std::map<K, K>>();
   BtreeMapTest<BtreeMap>();
@@ -701,9 +719,10 @@ TEST(Btree, map_cord) { MapTest<absl::Cord>(); }
 
 template <typename K, int N = 256>
 void MultiSetTest() {
-  EXPECT_EQ(
-      sizeof(absl::btree_multiset<K>),
-      2 * sizeof(void*) + sizeof(typename absl::btree_multiset<K>::size_type));
+  EXPECT_EQ(sizeof(absl::btree_multiset<K>),
+            2 * sizeof(void*) +
+                sizeof(typename absl::btree_multiset<K>::size_type) +
+                NoUniqueAddressPaddingAdjustment());
   using BtreeMSet = absl::btree_multiset<K>;
   BtreeMultiTest<BtreeMSet, std::multiset<K>>();
 }
@@ -712,7 +731,8 @@ template <typename K, int N = 256>
 void MultiMapTest() {
   EXPECT_EQ(sizeof(absl::btree_multimap<K, K>),
             2 * sizeof(void*) +
-                sizeof(typename absl::btree_multimap<K, K>::size_type));
+                sizeof(typename absl::btree_multimap<K, K>::size_type) +
+                NoUniqueAddressPaddingAdjustment());
   using BtreeMMap = absl::btree_multimap<K, K>;
   BtreeMultiTest<BtreeMMap, std::multimap<K, K>>();
   BtreeMultiMapTest<BtreeMMap>();
